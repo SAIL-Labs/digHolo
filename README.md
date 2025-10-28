@@ -1,3 +1,7 @@
+# Fork Notes 
+To include exmaples and binaries from release at https://github.com/joelacarpenter/digHolo
+
+
 # digHolo <img src="https://github.com/joelacarpenter/digHolo/blob/doc/DigHoloLogo_64x64.png" height="32" width="32"><br>
 
 High-speed library for off-axis digital holography and Hermite-Gaussian decomposition
