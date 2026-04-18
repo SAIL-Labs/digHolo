@@ -1,0 +1,240 @@
+cmake_minimum_required(VERSION 3.21)
+
+project(digHolo
+    VERSION 1.0.0
+    DESCRIPTION "High-speed library for off-axis digital holography and Hermite-Gaussian decomposition"
+    HOMEPAGE_URL "https://github.com/SAIL-Labs/digHolo"
+    LANGUAGES CXX
+)
+
+# ---------------------------------------------------------------------------
+# Project-wide settings
+# ---------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Default to Release for single-config generators (Ninja, Makefiles).
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+        Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+# ---------------------------------------------------------------------------
+# Options
+# ---------------------------------------------------------------------------
+option(DIGHOLO_BUILD_SHARED   "Build digholo as a shared library"            ON)
+option(DIGHOLO_BUILD_CLI      "Build the digHolo command-line executable"    ON)
+option(DIGHOLO_BUILD_TESTING  "Build smoke tests against the library"        ON)
+option(DIGHOLO_INSTALL        "Generate install / packaging targets"         ON)
+option(DIGHOLO_FFTW_DLL       "Define FFTW_DLL (use only for shared FFTW3)"  OFF)
+
+# ---------------------------------------------------------------------------
+# Architecture requirements (digHolo hard-requires AVX2 + FMA3 — x86-64 only)
+# ---------------------------------------------------------------------------
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|x64)")
+    message(FATAL_ERROR
+        "digHolo requires an x86-64 CPU with AVX2 + FMA3. "
+        "Detected processor: '${CMAKE_SYSTEM_PROCESSOR}'.")
+endif()
+
+if(APPLE)
+    message(FATAL_ERROR
+        "macOS is not a supported build target — digHolo's SIMD paths require "
+        "AVX2 + FMA3 (no Apple Silicon support) and Intel MKL is not "
+        "redistributed for macOS in modern oneAPI releases.")
+endif()
+
+# ---------------------------------------------------------------------------
+# Dependency: FFTW3 (single precision)
+# IMPORTANT: FFTW3 must appear in the link line BEFORE Intel MKL, otherwise
+# MKL's FFTW-compatible interface will be picked instead — and MKL does not
+# implement the real-to-real DCTs used by digHolo's AutoAlign routine.
+# ---------------------------------------------------------------------------
+set(_DIGHOLO_FFTW_TARGET "")
+
+# Preferred: vcpkg / installed FFTW3Config.cmake
+find_package(FFTW3f CONFIG QUIET)
+if(TARGET FFTW3::fftw3f)
+    set(_DIGHOLO_FFTW_TARGET FFTW3::fftw3f)
+endif()
+
+# Fallback: pkg-config (Linux distros)
+if(NOT _DIGHOLO_FFTW_TARGET)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FFTW3F IMPORTED_TARGET fftw3f)
+        if(TARGET PkgConfig::FFTW3F)
+            set(_DIGHOLO_FFTW_TARGET PkgConfig::FFTW3F)
+        endif()
+    endif()
+endif()
+
+# Last resort: manual find_path / find_library
+if(NOT _DIGHOLO_FFTW_TARGET)
+    find_path(FFTW3F_INCLUDE_DIR fftw3.h)
+    find_library(FFTW3F_LIBRARY NAMES fftw3f libfftw3f-3 libfftw3f)
+    if(NOT FFTW3F_INCLUDE_DIR OR NOT FFTW3F_LIBRARY)
+        message(FATAL_ERROR
+            "FFTW3 (single precision) not found. Install libfftw3-dev (Linux) "
+            "or run vcpkg with the supplied vcpkg.json manifest (Windows).")
+    endif()
+    add_library(digholo_fftw3f INTERFACE)
+    target_include_directories(digholo_fftw3f INTERFACE "${FFTW3F_INCLUDE_DIR}")
+    target_link_libraries(digholo_fftw3f INTERFACE "${FFTW3F_LIBRARY}")
+    set(_DIGHOLO_FFTW_TARGET digholo_fftw3f)
+endif()
+
+message(STATUS "digHolo: using FFTW3f target = ${_DIGHOLO_FFTW_TARGET}")
+
+# ---------------------------------------------------------------------------
+# Dependency: Intel MKL (BLAS + LAPACK)
+# Requires Intel oneAPI installed; setvars.sh / setvars.bat sourced.
+# ---------------------------------------------------------------------------
+set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
+set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
+set(MKL_LINK        "static"     CACHE STRING "MKL link mode (static/dynamic)")
+
+find_package(MKL CONFIG REQUIRED)
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+set(DIGHOLO_PUBLIC_HEADERS src/digHolo.h)
+set(DIGHOLO_SOURCES        src/digHolo.cpp)
+
+# ---------------------------------------------------------------------------
+# Helper: apply common compile settings to a target compiled from digHolo.cpp
+# ---------------------------------------------------------------------------
+function(_digholo_apply_compile_settings target)
+    target_include_directories(${target}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            /arch:AVX2
+            $<$<CONFIG:Release>:/O2>
+            $<$<CONFIG:Release>:/Oi>      # intrinsics
+            /D_CRT_SECURE_NO_WARNINGS
+        )
+    else()
+        target_compile_options(${target} PRIVATE
+            -mavx2 -mfma
+            $<$<CONFIG:Release>:-O3>
+        )
+    endif()
+
+    if(DIGHOLO_FFTW_DLL)
+        target_compile_definitions(${target} PRIVATE FFTW_DLL)
+    endif()
+
+    # Link FFTW3 *first*, then MKL — order matters (see README).
+    target_link_libraries(${target} PRIVATE ${_DIGHOLO_FFTW_TARGET} MKL::MKL)
+
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${target} PRIVATE pthread m dl)
+    endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Library target
+# ---------------------------------------------------------------------------
+if(DIGHOLO_BUILD_SHARED)
+    add_library(digholo SHARED ${DIGHOLO_SOURCES} ${DIGHOLO_PUBLIC_HEADERS})
+else()
+    add_library(digholo STATIC ${DIGHOLO_SOURCES} ${DIGHOLO_PUBLIC_HEADERS})
+endif()
+add_library(digHolo::digholo ALIAS digholo)
+
+_digholo_apply_compile_settings(digholo)
+
+set_target_properties(digholo PROPERTIES
+    OUTPUT_NAME    digholo
+    VERSION        ${PROJECT_VERSION}
+    SOVERSION      ${PROJECT_VERSION_MAJOR}
+    PUBLIC_HEADER  "${DIGHOLO_PUBLIC_HEADERS}"
+)
+
+# Windows shared library: export every extern "C" symbol automatically (the
+# header uses EXT_C, not __declspec(dllexport), so we lean on this CMake helper).
+if(WIN32 AND DIGHOLO_BUILD_SHARED)
+    set_target_properties(digholo PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
+# ---------------------------------------------------------------------------
+# CLI executable target
+#
+# The library translation unit also defines `main()` — so the executable is
+# produced by simply rebuilding src/digHolo.cpp as an executable, matching the
+# build recipe documented in the upstream README. This avoids modifying the
+# upstream source.
+# ---------------------------------------------------------------------------
+if(DIGHOLO_BUILD_CLI)
+    add_executable(digholo-cli ${DIGHOLO_SOURCES})
+    set_target_properties(digholo-cli PROPERTIES OUTPUT_NAME digHolo)
+    _digholo_apply_compile_settings(digholo-cli)
+endif()
+
+# ---------------------------------------------------------------------------
+# Smoke tests
+# ---------------------------------------------------------------------------
+if(DIGHOLO_BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# Install / packaging
+# ---------------------------------------------------------------------------
+if(DIGHOLO_INSTALL)
+    install(TARGETS digholo
+        EXPORT  digHoloTargets
+        LIBRARY        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME        DESTINATION ${CMAKE_INSTALL_BINDIR}
+        PUBLIC_HEADER  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+
+    if(DIGHOLO_BUILD_CLI)
+        install(TARGETS digholo-cli
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+
+    install(EXPORT digHoloTargets
+        FILE        digHoloTargets.cmake
+        NAMESPACE   digHolo::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/digHolo
+    )
+
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/digHoloConfigVersion.cmake"
+        VERSION       ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/digHoloConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/digHolo
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# Build summary
+# ---------------------------------------------------------------------------
+message(STATUS "")
+message(STATUS "digHolo ${PROJECT_VERSION} build configuration")
+message(STATUS "  Build type             : ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Shared library         : ${DIGHOLO_BUILD_SHARED}")
+message(STATUS "  CLI executable         : ${DIGHOLO_BUILD_CLI}")
+message(STATUS "  Smoke tests            : ${DIGHOLO_BUILD_TESTING}")
+message(STATUS "  Install targets        : ${DIGHOLO_INSTALL}")
+message(STATUS "  FFTW3f target          : ${_DIGHOLO_FFTW_TARGET}")
+message(STATUS "  MKL link / threading   : ${MKL_LINK} / ${MKL_THREADING}")
+message(STATUS "")

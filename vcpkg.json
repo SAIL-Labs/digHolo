@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "digholo",
+  "version-string": "1.0.0",
+  "description": "Off-axis digital holography and Hermite-Gaussian decomposition library",
+  "homepage": "https://github.com/SAIL-Labs/digHolo",
+  "dependencies": [
+    "fftw3"
+  ],
+  "$comments": [
+    "Intel MKL is NOT installed via vcpkg. Install Intel oneAPI Base Toolkit",
+    "(intel-oneapi-mkl-devel on Linux, the oneAPI installer on Windows) and",
+    "source setvars.sh / setvars.bat before configuring CMake."
+  ]
+}
