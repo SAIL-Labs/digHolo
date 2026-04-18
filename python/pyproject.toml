@@ -1,0 +1,138 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "digholo"
+version = "1.0.0"
+description = "High-speed off-axis digital holography and Hermite-Gaussian decomposition"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "MIT" }
+authors = [
+    { name = "Joel Carpenter", email = "j.carpenter@uq.edu.au" },
+    { name = "SAIL Labs" },
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage      = "https://github.com/SAIL-Labs/digHolo"
+Documentation = "https://arxiv.org/abs/2204.02348"
+Source        = "https://github.com/SAIL-Labs/digHolo"
+Issues        = "https://github.com/SAIL-Labs/digHolo/issues"
+
+# ---------------------------------------------------------------------------
+# scikit-build-core
+# ---------------------------------------------------------------------------
+[tool.scikit-build]
+# CMake source dir is THIS directory (python/), whose CMakeLists.txt wraps the
+# parent project via add_subdirectory(..). We don't need to rebuild the
+# library per Python version — it links zero Python symbols.
+cmake.source-dir = "."
+cmake.version    = ">=3.21"
+build-dir        = "build/{wheel_tag}"
+
+# The Python package source lives under src/digholo (PEP 621 src layout).
+wheel.packages = ["src/digholo"]
+
+# This wheel ships a vendored shared library but does NOT link libpython.
+# Tag it as `py3-none-<platform>` so a single binary serves every CPython
+# (and PyPy) on the target OS.
+wheel.py-api = "py3"
+
+# Files installed by CMake into the wheel root.
+install.components = ["python"]
+
+# Reproducible builds.
+sdist.reproducible = true
+
+[tool.scikit-build.cmake.define]
+# Force the static-deps preset settings even when the user didn't pass a
+# preset (e.g. cibuildwheel runs `pip wheel` directly).
+DIGHOLO_BUILD_SHARED       = "ON"
+DIGHOLO_BUILD_CLI          = "OFF"
+DIGHOLO_BUILD_TESTING      = "OFF"
+DIGHOLO_INSTALL            = "OFF"
+DIGHOLO_PREFER_STATIC_DEPS = "ON"
+MKL_LINK                   = "static"
+MKL_THREADING              = "sequential"
+
+# ---------------------------------------------------------------------------
+# cibuildwheel
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+# Build for CPython 3.9–3.13 plus PyPy 3.10. Skip musllinux (manylinux only)
+# and 32-bit (digHolo is x86-64-only).
+build       = "cp39-* cp310-* cp311-* cp312-* cp313-* pp310-*"
+skip        = "*-musllinux* *-win32 *-manylinux_i686"
+archs       = ["auto64"]
+
+# Smoke-test the built wheel by importing it and running the package tests.
+test-extras  = ["test"]
+test-command = "pytest {project}/python/tests -v"
+
+# Override per-platform: install MKL + build static FFTW3 before the wheel
+# build, exactly as the C++ build-linux job does.
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
+before-all = """
+# Install Intel oneAPI MKL via yum
+tee /etc/yum.repos.d/oneAPI.repo > /dev/null <<EOF
+[oneAPI]
+name=Intel oneAPI repository
+baseurl=https://yum.repos.intel.com/oneapi
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+EOF
+dnf install -y intel-oneapi-mkl-devel
+
+# Build static FFTW3
+cd /tmp
+curl -fsSLO https://www.fftw.org/fftw-3.3.10.tar.gz
+tar xf fftw-3.3.10.tar.gz
+cd fftw-3.3.10
+./configure --prefix=/usr/local/fftw3 --enable-single --enable-static \\
+    --disable-shared --enable-sse2 --enable-avx --enable-avx2 \\
+    --enable-fma CFLAGS="-fPIC -O3"
+make -j"$(nproc)" install
+"""
+
+[tool.cibuildwheel.linux.environment]
+CMAKE_PREFIX_PATH = "/usr/local/fftw3:/opt/intel/oneapi/mkl/latest"
+MKLROOT           = "/opt/intel/oneapi/mkl/latest"
+LIBRARY_PATH      = "/usr/local/fftw3/lib"
+CPATH             = "/usr/local/fftw3/include"
+
+[tool.cibuildwheel.windows]
+# Windows install handled by the parent CI job's `before-all` (we rely on the
+# same vcpkg + oneAPI install the C++ build-windows job sets up).
+before-all = ""
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion   = "7"
+addopts      = "-ra --strict-markers --strict-config"
+testpaths    = ["tests"]
+xfail_strict = true
