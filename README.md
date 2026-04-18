@@ -1,5 +1,7 @@
 # digHolo <img src="https://github.com/joelacarpenter/digHolo/blob/doc/DigHoloLogo_64x64.png" height="32" width="32">
 
+[![CI](https://github.com/SAIL-Labs/digHolo/actions/workflows/ci.yml/badge.svg)](https://github.com/SAIL-Labs/digHolo/actions/workflows/ci.yml)
+
 High-speed library for off-axis digital holography and Hermite-Gaussian decomposition.
 
 SAIL-Labs fork of [joelacarpenter/digHolo](https://github.com/joelacarpenter/digHolo).

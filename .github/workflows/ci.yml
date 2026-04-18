@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# Cancel in-flight PR builds when a new push lands on the same branch. Push
+# events to main / tags are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned Intel oneAPI Base Toolkit. Bump deliberately when there's a reason
+  # to (e.g. MKL compatibility fix). The Windows offline installer URL changes
+  # per release; check https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit-download.html
+  ONEAPI_VERSION_LINUX: "2024.2"
+  WINDOWS_BASEKIT_URL: "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.596_offline.exe"
+  WINDOWS_BASEKIT_COMPONENTS: "intel.oneapi.win.mkl.devel"
+
+jobs:
+  # ------------------------------------------------------------------------
+  build-linux:
+    name: Linux x86_64 (MKL + FFTW3)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Intel oneAPI apt repo
+        run: |
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneapi.list
+          sudo apt-get update
+
+      - name: Cache apt downloads
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-oneapi-${{ env.ONEAPI_VERSION_LINUX }}-ubuntu22-${{ hashFiles('.github/workflows/ci.yml') }}
+
+      - name: Install build deps + Intel oneAPI MKL + FFTW3
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build cmake \
+            libfftw3-dev libfftw3-single3 \
+            intel-oneapi-mkl-devel
+
+      - name: Source oneAPI environment
+        # setvars.sh exports MKLROOT, CMAKE_PREFIX_PATH, etc. We propagate the
+        # vars across subsequent steps via $GITHUB_ENV.
+        run: |
+          set -e
+          source /opt/intel/oneapi/setvars.sh
+          {
+            echo "ONEAPI_ROOT=${ONEAPI_ROOT}"
+            echo "MKLROOT=${MKLROOT}"
+            echo "CMPLR_ROOT=${CMPLR_ROOT}"
+            echo "TBBROOT=${TBBROOT:-}"
+            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+            echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}"
+            echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+            echo "LIBRARY_PATH=${LIBRARY_PATH:-}"
+            echo "CPATH=${CPATH:-}"
+            echo "NLSPATH=${NLSPATH:-}"
+          } >> "$GITHUB_ENV"
+          echo "${PATH}" | tr ':' '\n' >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Test
+        run: ctest --preset linux-release
+
+      - name: Stage release artefacts
+        run: |
+          mkdir -p artefacts/digholo-linux-x64/{lib,bin,include}
+          cp -P build/linux-release/libdigholo.so*  artefacts/digholo-linux-x64/lib/
+          cp    build/linux-release/digHolo         artefacts/digholo-linux-x64/bin/
+          cp    src/digHolo.h                       artefacts/digholo-linux-x64/include/
+          cp    README.md build.md                  artefacts/digholo-linux-x64/
+          ls -la artefacts/digholo-linux-x64/lib artefacts/digholo-linux-x64/bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digholo-linux-x64
+          path: artefacts/digholo-linux-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  build-windows:
+    name: Windows x86_64 (MKL + FFTW3)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+      ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ---- vcpkg --------------------------------------------------------
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Cache vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-bincache-x64-windows-
+
+      # ---- Intel oneAPI MKL --------------------------------------------
+      - name: Cache Intel oneAPI MKL install
+        id: cache-oneapi
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Download Intel oneAPI Base Toolkit installer
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "Downloading from $env:WINDOWS_BASEKIT_URL"
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -L --retry 3 --retry-delay 5 -o webimage.exe "$env:WINDOWS_BASEKIT_URL"
+          (Get-Item webimage.exe).Length / 1MB
+
+      - name: Install Intel oneAPI MKL (silent)
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          webimage.exe -s -x -f webimage_extracted --log extract.log
+          del webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install --components=%WINDOWS_BASEKIT_COMPONENTS% --eula=accept --continue-with-optional-error=yes --log-dir=install.log
+          rmdir /s /q webimage_extracted
+
+      - name: Source oneAPI environment
+        shell: pwsh
+        # setvars.bat is a cmd script. Run it from cmd, dump the resulting env,
+        # then forward only the oneAPI-relevant vars (PATH goes to GITHUB_PATH,
+        # one entry per line; the rest go to GITHUB_ENV).
+        run: |
+          $forwarded = 'ONEAPI_ROOT|MKLROOT|CMPLR_ROOT|TBBROOT|CMAKE_PREFIX_PATH|INCLUDE|LIB|LIBPATH'
+          cmd.exe /c "call `"$env:ONEAPI_INSTALL_DIR\setvars.bat`" --force >nul && set" | ForEach-Object {
+            if ($_ -match "^($forwarded)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            }
+            elseif ($_ -match '^PATH=(.*)$') {
+              $matches[1].Split(';') | Where-Object { $_ -ne '' } |
+                Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+
+      # ---- Build --------------------------------------------------------
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-release
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-release --config Release
+
+      - name: Test
+        shell: pwsh
+        run: ctest --preset windows-release
+
+      # ---- Artefacts ----------------------------------------------------
+      - name: Stage release artefacts
+        shell: pwsh
+        run: |
+          $stage = "artefacts/digholo-windows-x64"
+          New-Item -ItemType Directory -Force -Path "$stage/bin", "$stage/lib", "$stage/include" | Out-Null
+          Copy-Item build/windows-release/Release/digholo.dll "$stage/bin/"
+          Copy-Item build/windows-release/Release/digholo.lib "$stage/lib/"
+          Copy-Item build/windows-release/Release/digHolo.exe "$stage/bin/"
+          Copy-Item src/digHolo.h "$stage/include/"
+          Copy-Item README.md, build.md $stage
+          Get-ChildItem -Recurse $stage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digholo-windows-x64
+          path: artefacts/digholo-windows-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Package per-platform tarballs / zips
+        run: |
+          set -e
+          cd dist
+          ls -la
+          tar -czf ../digholo-linux-x64.tar.gz   -C digholo-linux-x64   .
+          (cd digholo-windows-x64 && zip -r ../../digholo-windows-x64.zip .)
+          ls -la ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            digholo-linux-x64.tar.gz
+            digholo-windows-x64.zip
