@@ -22,56 +22,116 @@ env:
   WINDOWS_BASEKIT_URL: "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.596_offline.exe"
   WINDOWS_BASEKIT_COMPONENTS: "intel.oneapi.win.mkl.devel"
 
+  # FFTW3 version built from source inside the manylinux container. Pinned
+  # for reproducibility; bump as needed.
+  FFTW_VERSION: "3.3.10"
+
 jobs:
   # ------------------------------------------------------------------------
   build-linux:
-    name: Linux x86_64 (MKL + FFTW3)
+    name: Linux x86_64 (manylinux_2_28, static FFTW3 + libstdc++)
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    # Build inside PyPA's manylinux_2_28 container (AlmaLinux 8 / glibc 2.28).
+    # This is the same container cibuildwheel uses, so the artefact we produce
+    # here is also the foundation for the planned Python wheel.
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64:latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add Intel oneAPI apt repo
+      # ---- Intel oneAPI MKL via yum -----------------------------------
+      - name: Add Intel oneAPI yum repo
         run: |
-          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-            | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
-          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-            | sudo tee /etc/apt/sources.list.d/oneapi.list
-          sudo apt-get update
+          tee /etc/yum.repos.d/oneAPI.repo > /dev/null <<'EOF'
+          [oneAPI]
+          name=Intel oneAPI repository
+          baseurl=https://yum.repos.intel.com/oneapi
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+          EOF
 
-      - name: Cache apt downloads
+      - name: Cache Intel oneAPI MKL install
+        id: cache-mkl
         uses: actions/cache@v4
         with:
-          path: /var/cache/apt/archives
-          key: apt-oneapi-${{ env.ONEAPI_VERSION_LINUX }}-ubuntu22-${{ hashFiles('.github/workflows/ci.yml') }}
+          path: /opt/intel/oneapi
+          key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
 
-      - name: Install build deps + Intel oneAPI MKL + FFTW3
+      - name: Install Intel oneAPI MKL (yum)
+        if: steps.cache-mkl.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build cmake \
-            libfftw3-dev libfftw3-single3 \
-            intel-oneapi-mkl-devel
+          dnf install -y intel-oneapi-mkl-devel
 
+      # ---- FFTW3 built from source, static, single precision, -fPIC ---
+      - name: Cache static FFTW3 install
+        id: cache-fftw
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/fftw3
+          key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
+
+      - name: Build static FFTW3
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd /tmp
+          curl -fsSLO "https://www.fftw.org/fftw-${FFTW_VERSION}.tar.gz"
+          tar xf "fftw-${FFTW_VERSION}.tar.gz"
+          cd "fftw-${FFTW_VERSION}"
+          ./configure \
+            --prefix=/usr/local/fftw3 \
+            --enable-single \
+            --enable-static \
+            --disable-shared \
+            --enable-sse2 \
+            --enable-avx \
+            --enable-avx2 \
+            --enable-fma \
+            CFLAGS="-fPIC -O3"
+          make -j"$(nproc)"
+          make install
+
+      - name: Expose FFTW3 install to later steps
+        run: |
+          echo "CMAKE_PREFIX_PATH=/usr/local/fftw3" >> "$GITHUB_ENV"
+          # find_library needs the .a on its search path
+          echo "LIBRARY_PATH=/usr/local/fftw3/lib" >> "$GITHUB_ENV"
+          echo "CPATH=/usr/local/fftw3/include" >> "$GITHUB_ENV"
+
+      # ---- Source oneAPI env -----------------------------------------
       - name: Source oneAPI environment
-        # setvars.sh exports MKLROOT, CMAKE_PREFIX_PATH, etc. We propagate the
-        # vars across subsequent steps via $GITHUB_ENV.
+        # setvars.sh prepends MKL paths to MKLROOT/CMAKE_PREFIX_PATH/etc.
+        # Merge with the FFTW paths already in GITHUB_ENV — append to
+        # CMAKE_PREFIX_PATH rather than overwrite.
         run: |
-          set -e
+          set -euo pipefail
           source /opt/intel/oneapi/setvars.sh
           {
             echo "ONEAPI_ROOT=${ONEAPI_ROOT}"
             echo "MKLROOT=${MKLROOT}"
             echo "CMPLR_ROOT=${CMPLR_ROOT}"
             echo "TBBROOT=${TBBROOT:-}"
-            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/usr/local/fftw3"
             echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}"
             echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
-            echo "LIBRARY_PATH=${LIBRARY_PATH:-}"
-            echo "CPATH=${CPATH:-}"
+            echo "LIBRARY_PATH=${LIBRARY_PATH:-}:/usr/local/fftw3/lib"
+            echo "CPATH=${CPATH:-}:/usr/local/fftw3/include"
             echo "NLSPATH=${NLSPATH:-}"
           } >> "$GITHUB_ENV"
           echo "${PATH}" | tr ':' '\n' >> "$GITHUB_PATH"
+
+      # ---- Build tools (cmake + ninja via pip — manylinux doesn't ship
+      #      either at a recent-enough version by default) --------------
+      - name: Install CMake + Ninja
+        run: |
+          /opt/python/cp311-cp311/bin/pip install --upgrade 'cmake>=3.21' ninja
+          # Expose them on PATH for subsequent steps.
+          echo "/opt/python/cp311-cp311/bin" >> "$GITHUB_PATH"
 
       - name: Configure
         run: cmake --preset linux-release
@@ -81,6 +141,18 @@ jobs:
 
       - name: Test
         run: ctest --preset linux-release
+
+      - name: Verify runtime dependencies of .so (should NOT link libfftw3f / libstdc++)
+        run: |
+          echo "--- ldd on libdigholo.so ---"
+          ldd build/linux-release/libdigholo.so* | tee ldd.out
+          # Any libstdc++ or libfftw3f dependency means we didn't actually
+          # achieve a portable build; fail the job so the regression is
+          # caught at CI time rather than by end users.
+          if grep -E 'libstdc\+\+|libfftw3f' ldd.out; then
+            echo "::error::portable-build regression: shared lib pulls in libstdc++ or libfftw3f"
+            exit 1
+          fi
 
       - name: Stage release artefacts
         run: |

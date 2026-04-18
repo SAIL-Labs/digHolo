@@ -74,15 +74,18 @@ ctest --test-dir build --output-on-failure
 
 ## Key CMake options
 
-| Option                  | Default | Effect                                               |
-| ----------------------- | ------- | ---------------------------------------------------- |
-| `DIGHOLO_BUILD_SHARED`  | `ON`    | Build shared (vs static) library                     |
-| `DIGHOLO_BUILD_CLI`     | `ON`    | Build the CLI executable                             |
-| `DIGHOLO_BUILD_TESTING` | `ON`    | Build smoke tests (run with `ctest`)                 |
-| `DIGHOLO_INSTALL`       | `ON`    | Emit install + `digHoloConfig.cmake` export targets  |
-| `DIGHOLO_FFTW_DLL`      | `OFF`   | Define `FFTW_DLL` (only for dynamic-linked FFTW)     |
-| `MKL_LINK`              | `static` | `static` or `dynamic` MKL linkage                   |
-| `MKL_THREADING`         | `sequential` | `sequential`, `tbb`, `intel_thread`             |
+| Option                       | Default | Effect                                                                                    |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `DIGHOLO_BUILD_SHARED`       | `ON`    | Build shared (vs static) library                                                          |
+| `DIGHOLO_BUILD_CLI`          | `ON`    | Build the CLI executable                                                                  |
+| `DIGHOLO_BUILD_TESTING`      | `ON`    | Build smoke tests (run with `ctest`)                                                      |
+| `DIGHOLO_INSTALL`            | `ON`    | Emit install + `digHoloConfig.cmake` export targets                                       |
+| `DIGHOLO_FFTW_DLL`           | `OFF`   | Define `FFTW_DLL` (only for dynamic-linked FFTW)                                          |
+| `DIGHOLO_PREFER_STATIC_DEPS` | `OFF`   | Linux only: prefer static FFTW3 + `-static-libstdc++ -static-libgcc` (portable `.so`)    |
+| `MKL_LINK`                   | `static`     | `static` or `dynamic` MKL linkage                                                    |
+| `MKL_THREADING`              | `sequential` | `sequential`, `tbb`, `intel_thread`                                                  |
+
+The `linux-release` preset sets `DIGHOLO_PREFER_STATIC_DEPS=ON` — this is what CI builds to produce the portable release artefacts. Turning it off produces a thinner `.so` that dynamically links `libfftw3f.so.3` and `libstdc++.so.6`.
 
 ## Gotchas
 
@@ -97,6 +100,25 @@ ctest --test-dir build --output-on-failure
 - When distributing the shared library alongside MKL's own DLLs/SOs (dynamic
   MKL linkage), remember to ship `libiomp5md.dll` / `libiomp5.so` if you use
   `MKL_THREADING=intel_thread`.
+
+## Runtime dependencies of the published artefacts
+
+The CI workflow (`.github/workflows/ci.yml`) produces release artefacts that
+are intentionally self-contained:
+
+- **Linux (`digholo-linux-x64`)** — built inside `quay.io/pypa/manylinux_2_28_x86_64`
+  (glibc 2.28, AlmaLinux 8). MKL, FFTW3, libstdc++, and libgcc are all
+  statically linked into `libdigholo.so`. The only runtime requirement is
+  glibc ≥ 2.28 (RHEL 8 / Ubuntu 18.04 / Debian 10 and newer). The CI job
+  asserts this with `ldd | grep -E 'libstdc\+\+|libfftw3f'` — the build fails
+  if either dependency leaks back in.
+- **Windows (`digholo-windows-x64`)** — MKL and FFTW3 statically linked. The
+  only runtime requirement is the Microsoft Visual C++ Redistributable (MSVC
+  2015–2022 redist), which is present on virtually every Windows install.
+
+For a thin "build against my system MKL/FFTW" build instead (smaller binary,
+shared deps), turn `DIGHOLO_PREFER_STATIC_DEPS=OFF` and use the system FFTW3
+package — the default `linux-debug` preset works this way.
 
 ## Python / MATLAB bindings
 

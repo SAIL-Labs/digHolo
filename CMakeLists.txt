@@ -28,11 +28,19 @@ include(CMakePackageConfigHelpers)
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-option(DIGHOLO_BUILD_SHARED   "Build digholo as a shared library"            ON)
-option(DIGHOLO_BUILD_CLI      "Build the digHolo command-line executable"    ON)
-option(DIGHOLO_BUILD_TESTING  "Build smoke tests against the library"        ON)
-option(DIGHOLO_INSTALL        "Generate install / packaging targets"         ON)
-option(DIGHOLO_FFTW_DLL       "Define FFTW_DLL (use only for shared FFTW3)"  OFF)
+option(DIGHOLO_BUILD_SHARED        "Build digholo as a shared library"            ON)
+option(DIGHOLO_BUILD_CLI           "Build the digHolo command-line executable"    ON)
+option(DIGHOLO_BUILD_TESTING       "Build smoke tests against the library"        ON)
+option(DIGHOLO_INSTALL             "Generate install / packaging targets"         ON)
+option(DIGHOLO_FFTW_DLL            "Define FFTW_DLL (use only for shared FFTW3)"  OFF)
+
+# When ON: produce a self-contained shared library that drops onto the user's
+# system without requiring libfftw3, libstdc++, or libgcc to be installed at a
+# specific version. Strongly recommended for any artefact that's published for
+# external consumption (release tarballs, Python wheels). Linux-only — Windows
+# already gets static FFTW3 via vcpkg's x64-windows-static-md triplet, and the
+# MSVC runtime is universally available via VC++ Redistributable.
+option(DIGHOLO_PREFER_STATIC_DEPS  "Prefer static FFTW3 + libstdc++/libgcc"       OFF)
 
 # ---------------------------------------------------------------------------
 # Architecture requirements (digHolo hard-requires AVX2 + FMA3 — x86-64 only)
@@ -58,39 +66,63 @@ endif()
 # ---------------------------------------------------------------------------
 set(_DIGHOLO_FFTW_TARGET "")
 
-# Preferred: vcpkg / installed FFTW3Config.cmake
-find_package(FFTW3f CONFIG QUIET)
-if(TARGET FFTW3::fftw3f)
-    set(_DIGHOLO_FFTW_TARGET FFTW3::fftw3f)
-endif()
-
-# Fallback: pkg-config (Linux distros)
-if(NOT _DIGHOLO_FFTW_TARGET)
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(FFTW3F IMPORTED_TARGET fftw3f)
-        if(TARGET PkgConfig::FFTW3F)
-            set(_DIGHOLO_FFTW_TARGET PkgConfig::FFTW3F)
-        endif()
-    endif()
-endif()
-
-# Last resort: manual find_path / find_library
-if(NOT _DIGHOLO_FFTW_TARGET)
+if(DIGHOLO_PREFER_STATIC_DEPS AND NOT WIN32)
+    # Bypass FFTW3Config.cmake / pkg-config (both return whichever library
+    # variant upstream packaged — usually the shared one on Linux) and locate
+    # the static archive directly.
     find_path(FFTW3F_INCLUDE_DIR fftw3.h)
-    find_library(FFTW3F_LIBRARY NAMES fftw3f libfftw3f-3 libfftw3f)
+    find_library(FFTW3F_LIBRARY NAMES libfftw3f.a)
     if(NOT FFTW3F_INCLUDE_DIR OR NOT FFTW3F_LIBRARY)
         message(FATAL_ERROR
-            "FFTW3 (single precision) not found. Install libfftw3-dev (Linux) "
-            "or run vcpkg with the supplied vcpkg.json manifest (Windows).")
+            "Static FFTW3f (libfftw3f.a) not found — required with "
+            "DIGHOLO_PREFER_STATIC_DEPS=ON. On Debian/Ubuntu install "
+            "libfftw3-dev (which ships libfftw3f.a alongside the shared lib); "
+            "on AlmaLinux/RHEL install fftw-static; or build FFTW3 from "
+            "source with --enable-static --enable-single -fPIC.")
     endif()
     add_library(digholo_fftw3f INTERFACE)
     target_include_directories(digholo_fftw3f INTERFACE "${FFTW3F_INCLUDE_DIR}")
     target_link_libraries(digholo_fftw3f INTERFACE "${FFTW3F_LIBRARY}")
     set(_DIGHOLO_FFTW_TARGET digholo_fftw3f)
+else()
+    # Preferred: vcpkg / installed FFTW3Config.cmake
+    find_package(FFTW3f CONFIG QUIET)
+    if(TARGET FFTW3::fftw3f)
+        set(_DIGHOLO_FFTW_TARGET FFTW3::fftw3f)
+    endif()
+
+    # Fallback: pkg-config (Linux distros)
+    if(NOT _DIGHOLO_FFTW_TARGET)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(FFTW3F IMPORTED_TARGET fftw3f)
+            if(TARGET PkgConfig::FFTW3F)
+                set(_DIGHOLO_FFTW_TARGET PkgConfig::FFTW3F)
+            endif()
+        endif()
+    endif()
+
+    # Last resort: manual find_path / find_library
+    if(NOT _DIGHOLO_FFTW_TARGET)
+        find_path(FFTW3F_INCLUDE_DIR fftw3.h)
+        find_library(FFTW3F_LIBRARY NAMES fftw3f libfftw3f-3 libfftw3f)
+        if(NOT FFTW3F_INCLUDE_DIR OR NOT FFTW3F_LIBRARY)
+            message(FATAL_ERROR
+                "FFTW3 (single precision) not found. Install libfftw3-dev "
+                "(Linux) or run vcpkg with the supplied vcpkg.json manifest "
+                "(Windows).")
+        endif()
+        add_library(digholo_fftw3f INTERFACE)
+        target_include_directories(digholo_fftw3f INTERFACE "${FFTW3F_INCLUDE_DIR}")
+        target_link_libraries(digholo_fftw3f INTERFACE "${FFTW3F_LIBRARY}")
+        set(_DIGHOLO_FFTW_TARGET digholo_fftw3f)
+    endif()
 endif()
 
 message(STATUS "digHolo: using FFTW3f target = ${_DIGHOLO_FFTW_TARGET}")
+if(DIGHOLO_PREFER_STATIC_DEPS)
+    message(STATUS "digHolo: DIGHOLO_PREFER_STATIC_DEPS=ON (portable shared lib)")
+endif()
 
 # ---------------------------------------------------------------------------
 # Dependency: Intel MKL (BLAS + LAPACK)
@@ -141,6 +173,18 @@ function(_digholo_apply_compile_settings target)
 
     if(UNIX AND NOT APPLE)
         target_link_libraries(${target} PRIVATE pthread m dl)
+    endif()
+
+    # Portable Linux artefacts: static-link libstdc++ + libgcc so the output
+    # runs on any distro with a recent-enough glibc (set by the build host —
+    # manylinux_2_28 gives glibc 2.28 → RHEL 8 / Ubuntu 18.04+). digholo's
+    # public API is extern "C" only, so swallowing the C++ runtime into the
+    # binary is safe — no C++ ABI crosses the library boundary.
+    if(DIGHOLO_PREFER_STATIC_DEPS AND UNIX AND NOT APPLE)
+        target_link_options(${target} PRIVATE
+            -static-libstdc++
+            -static-libgcc
+        )
     endif()
 endfunction()
 

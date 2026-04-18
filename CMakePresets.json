@@ -17,13 +17,14 @@
     },
     {
       "name": "linux-release",
-      "displayName": "Linux Release (Ninja, MKL static)",
+      "displayName": "Linux Release (Ninja, fully static deps)",
       "inherits": "base",
       "generator": "Ninja",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "cacheVariables": {
         "MKL_LINK": "static",
-        "MKL_THREADING": "sequential"
+        "MKL_THREADING": "sequential",
+        "DIGHOLO_PREFER_STATIC_DEPS": "ON"
       }
     },
     {
