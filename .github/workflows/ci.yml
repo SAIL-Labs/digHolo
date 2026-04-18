@@ -297,10 +297,146 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------------
+  build-wheel-linux:
+    name: Wheel - Linux x86_64 (cibuildwheel)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    # Note: this job runs on the HOST runner, NOT inside a container.
+    # cibuildwheel itself spawns the manylinux_2_28 container internally
+    # — its [tool.cibuildwheel.linux] block in python/pyproject.toml
+    # configures the image and the before-all install steps.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.21.3
+
+      - name: Build wheel
+        working-directory: python
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          # Pure-ctypes wheel: build only one Python version, the resulting
+          # py3-none-manylinux_2_28_x86_64.whl works on every CPython 3.x.
+          # cibuildwheel will still smoke-test it via `test-command`.
+          CIBW_BUILD: "cp311-manylinux_x86_64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digholo-wheel-linux
+          path: python/wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  build-wheel-windows:
+    name: Wheel - Windows x86_64 (cibuildwheel)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+      ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # vcpkg + MKL setup duplicates build-windows. Tolerate the duplication
+      # for now; if it gets painful, factor into a composite action under
+      # .github/actions/setup-windows-deps.
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:VCPKG_ROOT") {
+            Remove-Item -Recurse -Force "$env:VCPKG_ROOT"
+          }
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Cache vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-bincache-x64-windows-
+
+      - name: Cache Intel oneAPI MKL install
+        id: cache-oneapi
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Download Intel oneAPI Base Toolkit installer
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -L --retry 3 --retry-delay 5 -o webimage.exe "$env:WINDOWS_BASEKIT_URL"
+
+      - name: Install Intel oneAPI MKL (silent)
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          start /b /wait webimage.exe -s -x -f webimage_extracted --log extract.log
+          del webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install ^
+            --components=%WINDOWS_BASEKIT_COMPONENTS% ^
+            --eula=accept ^
+            -p=NEED_VS2017_INTEGRATION=0 ^
+            -p=NEED_VS2019_INTEGRATION=0 ^
+            -p=NEED_VS2022_INTEGRATION=0 ^
+            --log-dir=.
+          rmdir /s /q webimage_extracted
+
+      - name: Source oneAPI environment
+        shell: pwsh
+        run: |
+          $forwarded = 'ONEAPI_ROOT|MKLROOT|CMPLR_ROOT|TBBROOT|CMAKE_PREFIX_PATH|INCLUDE|LIB|LIBPATH'
+          cmd.exe /c "call `"$env:ONEAPI_INSTALL_DIR\setvars.bat`" --force >nul && set" | ForEach-Object {
+            if ($_ -match "^($forwarded)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            }
+            elseif ($_ -match '^PATH=(.*)$') {
+              $matches[1].Split(';') | Where-Object { $_ -ne '' } |
+                Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.21.3
+
+      - name: Build wheel
+        working-directory: python
+        shell: pwsh
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: "cp311-win_amd64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digholo-wheel-windows
+          path: python/wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-wheel-linux, build-wheel-windows]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -317,6 +453,9 @@ jobs:
           ls -la
           tar -czf ../digholo-linux-x64.tar.gz   -C digholo-linux-x64   .
           (cd digholo-windows-x64 && zip -r ../../digholo-windows-x64.zip .)
+          # Wheels are uploaded as-is.
+          cp digholo-wheel-linux/*.whl   ../
+          cp digholo-wheel-windows/*.whl ../
           ls -la ..
 
       - name: Create GitHub Release
@@ -327,3 +466,4 @@ jobs:
           files: |
             digholo-linux-x64.tar.gz
             digholo-windows-x64.zip
+            *.whl
