@@ -104,24 +104,24 @@ jobs:
           echo "CPATH=/usr/local/fftw3/include" >> "$GITHUB_ENV"
 
       # ---- Source oneAPI env -----------------------------------------
-      - name: Source oneAPI environment
-        # setvars.sh prepends MKL paths to MKLROOT/CMAKE_PREFIX_PATH/etc.
-        # Merge with the FFTW paths already in GITHUB_ENV — append to
-        # CMAKE_PREFIX_PATH rather than overwrite.
+      - name: Source MKL environment
+        # We installed only intel-oneapi-mkl-devel — but yum drags in the
+        # intel-oneapi-compiler-shared-runtime as a dep, which makes the
+        # umbrella setvars.sh source compiler/env/vars.sh too. That script
+        # references OCL_ICD_FILENAMES unconditionally and aborts under
+        # `set -u`. Skip the umbrella entirely and source just MKL's vars.sh
+        # — that's all we actually need.
+        shell: bash
         run: |
-          set -euo pipefail
-          source /opt/intel/oneapi/setvars.sh
+          set -eo pipefail
+          source /opt/intel/oneapi/mkl/latest/env/vars.sh
           {
-            echo "ONEAPI_ROOT=${ONEAPI_ROOT}"
             echo "MKLROOT=${MKLROOT}"
-            echo "CMPLR_ROOT=${CMPLR_ROOT}"
-            echo "TBBROOT=${TBBROOT:-}"
-            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}:/usr/local/fftw3"
+            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}:/usr/local/fftw3"
             echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}"
             echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
             echo "LIBRARY_PATH=${LIBRARY_PATH:-}:/usr/local/fftw3/lib"
             echo "CPATH=${CPATH:-}:/usr/local/fftw3/include"
-            echo "NLSPATH=${NLSPATH:-}"
           } >> "$GITHUB_ENV"
           echo "${PATH}" | tr ':' '\n' >> "$GITHUB_PATH"
 
@@ -184,15 +184,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      # NOTE: do NOT use ilammy/msvc-dev-cmd here — that action overrides
+      # VCPKG_ROOT with its own bundled vcpkg path, breaking the toolchain
+      # file lookup. The "Visual Studio 17 2022" CMake generator finds MSVC
+      # via vswhere and invokes MSBuild internally; cl.exe on PATH isn't
+      # needed.
 
       # ---- vcpkg --------------------------------------------------------
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
+          if (Test-Path "$env:VCPKG_ROOT") {
+            Remove-Item -Recurse -Force "$env:VCPKG_ROOT"
+          }
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
