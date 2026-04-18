@@ -15,11 +15,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Pinned Intel oneAPI Base Toolkit. Bump deliberately when there's a reason
-  # to (e.g. MKL compatibility fix). The Windows offline installer URL changes
-  # per release; check https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit-download.html
-  ONEAPI_VERSION_LINUX: "2024.2"
-  WINDOWS_BASEKIT_URL: "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/7dff44ba-e3af-4448-841c-0d616c8da6e7/w_BaseKit_p_2024.1.0.596_offline.exe"
+  # Pinned Intel oneAPI Base Toolkit. Bump deliberately. Intel rotates the
+  # offline-installer URL hash every release — the canonical place to look
+  # for a current URL is Intel's own CI workflow at:
+  #   https://github.com/oneapi-src/oneapi-ci/blob/master/.github/workflows/build_all.yml
+  # (search for WINDOWS_BASEKIT_URL).
+  ONEAPI_VERSION_LINUX: "2025.3"
+  WINDOWS_BASEKIT_URL: "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/1f18901e-877d-469d-a41a-a10f11b39336/intel-oneapi-base-toolkit-2025.3.0.372_offline.exe"
   WINDOWS_BASEKIT_COMPONENTS: "intel.oneapi.win.mkl.devel"
 
   # FFTW3 version built from source inside the manylinux container. Pinned
@@ -227,12 +229,21 @@ jobs:
           (Get-Item webimage.exe).Length / 1MB
 
       - name: Install Intel oneAPI MKL (silent)
+        # Install pattern lifted from Intel's official oneapi-src/oneapi-ci
+        # (scripts/install_windows.bat). The NEED_VS*_INTEGRATION=0 flags
+        # skip the VS plug-in install — we only need MKL itself.
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: cmd
         run: |
-          webimage.exe -s -x -f webimage_extracted --log extract.log
+          start /b /wait webimage.exe -s -x -f webimage_extracted --log extract.log
           del webimage.exe
-          webimage_extracted\bootstrapper.exe -s --action install --components=%WINDOWS_BASEKIT_COMPONENTS% --eula=accept --continue-with-optional-error=yes --log-dir=install.log
+          webimage_extracted\bootstrapper.exe -s --action install ^
+            --components=%WINDOWS_BASEKIT_COMPONENTS% ^
+            --eula=accept ^
+            -p=NEED_VS2017_INTEGRATION=0 ^
+            -p=NEED_VS2019_INTEGRATION=0 ^
+            -p=NEED_VS2022_INTEGRATION=0 ^
+            --log-dir=.
           rmdir /s /q webimage_extracted
 
       - name: Source oneAPI environment
