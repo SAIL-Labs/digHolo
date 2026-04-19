@@ -168,14 +168,24 @@ if(DIGHOLO_PREFER_STATIC_DEPS)
 endif()
 
 # ---------------------------------------------------------------------------
-# Dependency: Intel MKL (BLAS + LAPACK)
-# Requires Intel oneAPI installed; setvars.sh / setvars.bat sourced.
+# Dependency: BLAS + LAPACK
+#
+# x86-64 (Linux, Windows): Intel MKL via oneAPI. Requires setvars.{sh,bat}
+# sourced so the CMake config is on CMAKE_PREFIX_PATH.
+#
+# Apple Silicon: the Accelerate framework, using the modern LAPACK interface
+# introduced in macOS 13.3 (ACCELERATE_NEW_LAPACK, LP64 int-sized).
 # ---------------------------------------------------------------------------
-set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
-set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
-set(MKL_LINK        "static"     CACHE STRING "MKL link mode (static/dynamic)")
+if(DIGHOLO_IS_APPLE_SILICON)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    message(STATUS "digHolo: using Apple Accelerate framework = ${ACCELERATE_FRAMEWORK}")
+else()
+    set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
+    set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
+    set(MKL_LINK        "static"     CACHE STRING "MKL link mode (static/dynamic)")
 
-find_package(MKL CONFIG REQUIRED)
+    find_package(MKL CONFIG REQUIRED)
+endif()
 
 # ---------------------------------------------------------------------------
 # Sources
@@ -201,18 +211,41 @@ function(_digholo_apply_compile_settings target)
             /D_CRT_SECURE_NO_WARNINGS
         )
     else()
-        target_compile_options(${target} PRIVATE
-            -mavx2 -mfma
-            $<$<CONFIG:Release>:-O3>
-        )
+        if(DIGHOLO_IS_APPLE_SILICON)
+            # simde handles intrinsic translation — no -mavx2/-mfma needed.
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-O3>
+            )
+        else()
+            target_compile_options(${target} PRIVATE
+                -mavx2 -mfma
+                $<$<CONFIG:Release>:-O3>
+            )
+        endif()
     endif()
 
     if(DIGHOLO_FFTW_DLL)
         target_compile_definitions(${target} PRIVATE FFTW_DLL)
     endif()
 
-    # Link FFTW3 *first*, then MKL — order matters (see README).
-    target_link_libraries(${target} PRIVATE ${_DIGHOLO_FFTW_TARGET} MKL::MKL)
+    # Link FFTW3 *first*, then the BLAS/LAPACK backend — order matters for
+    # the MKL path (MKL also ships an FFTW-compatible interface that lacks
+    # the real-to-real DCTs digHolo needs; FFTW must win the symbol race).
+    if(DIGHOLO_IS_APPLE_SILICON)
+        target_link_libraries(${target} PRIVATE
+            ${_DIGHOLO_FFTW_TARGET}
+            ${ACCELERATE_FRAMEWORK}
+        )
+        target_compile_definitions(${target} PRIVATE
+            DIGHOLO_USE_ACCELERATE
+            ACCELERATE_NEW_LAPACK
+        )
+    else()
+        target_link_libraries(${target} PRIVATE
+            ${_DIGHOLO_FFTW_TARGET}
+            MKL::MKL
+        )
+    endif()
 
     if(UNIX AND NOT APPLE)
         target_link_libraries(${target} PRIVATE pthread m dl)
@@ -351,5 +384,9 @@ message(STATUS "  CLI executable         : ${DIGHOLO_BUILD_CLI}")
 message(STATUS "  Smoke tests            : ${DIGHOLO_BUILD_TESTING}")
 message(STATUS "  Install targets        : ${DIGHOLO_INSTALL}")
 message(STATUS "  FFTW3f target          : ${_DIGHOLO_FFTW_TARGET}")
-message(STATUS "  MKL link / threading   : ${MKL_LINK} / ${MKL_THREADING}")
+if(DIGHOLO_IS_APPLE_SILICON)
+    message(STATUS "  BLAS/LAPACK backend    : Apple Accelerate")
+else()
+    message(STATUS "  MKL link / threading   : ${MKL_LINK} / ${MKL_THREADING}")
+endif()
 message(STATUS "")

@@ -45,41 +45,53 @@
 //Real-to-real transforms are used during the 'AutoAlign' routine.
 #include <fftw3.h>
 
-#ifdef LAPACKBLAS_ENABLE	
-#ifdef MKL_ENABLE
-	//Intel MKL library
-	//Console 'MKL Link link advisor' for assistance selecting the correct .libs
-	//https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl/link-line-advisor.html
-	//e.g. static linked :  mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
-		//or if you're having issues with libiomp5md.lib (openMP threads), link with the sequential version
-		//mkl_intel_lp64.lib;mkl_sequential.lib;mkl_core.lib
-	//e.g. dynamic linked :  mkl_rt.lib
+#ifdef LAPACKBLAS_ENABLE
+#if defined(DIGHOLO_USE_ACCELERATE)
+    // Apple Silicon path — Accelerate framework, modern LAPACK interface.
+    // ACCELERATE_NEW_LAPACK is defined at the compiler command line by CMake.
+    // Accelerate exposes standard LAPACK / CBLAS symbol names, so call sites
+    // below (cgesvd, sgels, cblas_cgemv, cblas_cgemm) need no changes.
+    #include <Accelerate/Accelerate.h>
+    #define BLAS_COMPLEXTYPE __CLPK_complex
+    // Modern LAPACK exposes trailing-underscore symbols; map the undecorated
+    // names the code uses onto them. Matches the OpenBLAS Fortran-interface
+    // aliasing in the #else branch below.
+    #define cgesvd cgesvd_
+    #define sgels  sgels_
+#elif defined(MKL_ENABLE)
+    //Intel MKL library
+    //Console 'MKL Link link advisor' for assistance selecting the correct .libs
+    //https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl/link-line-advisor.html
+    //e.g. static linked :  mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
+        //or if you're having issues with libiomp5md.lib (openMP threads), link with the sequential version
+        //mkl_intel_lp64.lib;mkl_sequential.lib;mkl_core.lib
+    //e.g. dynamic linked :  mkl_rt.lib
 
-	//If using Intel MKL...
-	//Don't forget C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
-	//C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
-	//Most of your dlls will be in folder C:\Program Files (x86)\Intel\oneAPI\mkl\latest\redist\intel64\..., you'll need to copy those into the same folder as your executable.
+    //If using Intel MKL...
+    //Don't forget C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
+    //C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
+    //Most of your dlls will be in folder C:\Program Files (x86)\Intel\oneAPI\mkl\latest\redist\intel64\..., you'll need to copy those into the same folder as your executable.
 
-#include <mkl_lapack.h>//cgesvd, sgels
-#ifdef CBLAS_ENABLE
-#include <mkl_cblas.h> //cgemv, cgemm
-#else //Fortran interface
-#include <mkl_blas.h> //cgemv, cgemm
-#endif
-//Define the complex type so functions don't complain that complex isn't what they expect, even if it's bitwise compatible with std::complex<float>
-#define BLAS_COMPLEXTYPE MKL_Complex8
+    #include <mkl_lapack.h>//cgesvd, sgels
+    #ifdef CBLAS_ENABLE
+    #include <mkl_cblas.h> //cgemv, cgemm
+    #else //Fortran interface
+    #include <mkl_blas.h> //cgemv, cgemm
+    #endif
+    //Define the complex type so functions don't complain that complex isn't what they expect, even if it's bitwise compatible with std::complex<float>
+    #define BLAS_COMPLEXTYPE MKL_Complex8
 #else
-	//openBLAS (https://www.openblas.net/)
-	//Link against libopenblas.lib (libopenblas.dll)
-#include <lapack.h>
-#ifdef CBLAS_ENABLE
-#include <cblas.h> //cgemv, cgemm
-#else //Fortran interface
-#include <blas.h> //cgemv, cgemm
-#endif
-#define BLAS_COMPLEXTYPE _Complex float
-#define cgesvd cgesvd_
-#define sgels sgels_
+    //openBLAS (https://www.openblas.net/)
+    //Link against libopenblas.lib (libopenblas.dll)
+    #include <lapack.h>
+    #ifdef CBLAS_ENABLE
+    #include <cblas.h> //cgemv, cgemm
+    #else //Fortran interface
+    #include <blas.h> //cgemv, cgemm
+    #endif
+    #define BLAS_COMPLEXTYPE _Complex float
+    #define cgesvd cgesvd_
+    #define sgels sgels_
 #endif
 #endif
 
