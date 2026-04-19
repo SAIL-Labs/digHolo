@@ -43,19 +43,30 @@ option(DIGHOLO_FFTW_DLL            "Define FFTW_DLL (use only for shared FFTW3)"
 option(DIGHOLO_PREFER_STATIC_DEPS  "Prefer static FFTW3 + libstdc++/libgcc"       OFF)
 
 # ---------------------------------------------------------------------------
-# Architecture requirements (digHolo hard-requires AVX2 + FMA3 — x86-64 only)
+# Architecture requirements
+#
+# digHolo's SIMD core was originally written against x86-64 AVX2 + FMA3. On
+# Apple Silicon we route the same intrinsics through simde → NEON, so arm64
+# is also accepted on Apple hosts. Other architectures (arm64 Linux, other
+# POSIX) are still unsupported.
 # ---------------------------------------------------------------------------
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|x64)")
-    message(FATAL_ERROR
-        "digHolo requires an x86-64 CPU with AVX2 + FMA3. "
-        "Detected processor: '${CMAKE_SYSTEM_PROCESSOR}'.")
+set(DIGHOLO_IS_APPLE_SILICON OFF)
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
+    set(DIGHOLO_IS_APPLE_SILICON ON)
 endif()
 
-if(APPLE)
+if(NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|x64)" OR DIGHOLO_IS_APPLE_SILICON))
     message(FATAL_ERROR
-        "macOS is not a supported build target — digHolo's SIMD paths require "
-        "AVX2 + FMA3 (no Apple Silicon support) and Intel MKL is not "
-        "redistributed for macOS in modern oneAPI releases.")
+        "digHolo supports x86-64 with AVX2 + FMA3 (Linux, Windows) or "
+        "Apple Silicon (arm64 macOS, via simde + Accelerate). "
+        "Detected system: ${CMAKE_SYSTEM_NAME} / ${CMAKE_SYSTEM_PROCESSOR}.")
+endif()
+
+if(APPLE AND NOT DIGHOLO_IS_APPLE_SILICON)
+    message(FATAL_ERROR
+        "x86_64 macOS is not supported — Intel MKL is not redistributed for "
+        "macOS in modern oneAPI releases. Build on arm64 macOS (simde + "
+        "Accelerate) or on Linux/Windows (MKL).")
 endif()
 
 # ---------------------------------------------------------------------------
