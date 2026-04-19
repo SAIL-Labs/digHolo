@@ -165,9 +165,26 @@
 // linker decided they didn't need to import them). On Linux the original
 // macro was empty — no extern "C" — which left symbols C++-mangled and
 // broke ctypes. Both are fixed here.
+// Three Windows build modes, distinguished by which preprocessor macro the
+// build system defines:
+//
+//   DIGHOLO_STATIC_BUILD  — compiling the source directly into an .exe or
+//                           static .lib that doesn't expose a DLL surface
+//                           at all (e.g. the digHolo CLI). Plain extern "C",
+//                           no DLL decoration. Without this, MSVC creates
+//                           an .lib next to the .exe whose name collides
+//                           with the shared library's import lib on
+//                           case-insensitive Windows filesystems.
+//   DIGHOLO_BUILDING      — compiling the digholo SHARED library itself.
+//                           Use dllexport so symbols land in the import lib.
+//   (neither)             — compiling a consumer of digholo.dll. Use
+//                           dllimport so the consumer generates proper
+//                           import-table entries against digholo.dll.
 #ifdef __cplusplus
 #  ifdef _WIN32
-#    ifdef DIGHOLO_BUILDING
+#    if defined(DIGHOLO_STATIC_BUILD)
+#      define EXT_C extern "C"
+#    elif defined(DIGHOLO_BUILDING)
 #      define EXT_C extern "C" __declspec(dllexport)
 #    else
 #      define EXT_C extern "C" __declspec(dllimport)
@@ -177,7 +194,9 @@
 #  endif
 #else
 #  ifdef _WIN32
-#    ifdef DIGHOLO_BUILDING
+#    if defined(DIGHOLO_STATIC_BUILD)
+#      define EXT_C
+#    elif defined(DIGHOLO_BUILDING)
 #      define EXT_C __declspec(dllexport)
 #    else
 #      define EXT_C __declspec(dllimport)

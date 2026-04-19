@@ -224,12 +224,15 @@ if(DIGHOLO_BUILD_CLI)
     add_executable(digholo-cli ${DIGHOLO_SOURCES})
     set_target_properties(digholo-cli PROPERTIES OUTPUT_NAME digHolo)
     _digholo_apply_compile_settings(digholo-cli)
-    # CLI builds the library source into its own executable — same
-    # "producer" semantics as the shared lib, so dllexport is correct
-    # (harmless on Windows; on an .exe the exports are effectively
-    # unused, but it prevents dllimport from being applied to
-    # definitions compiled here, which would fail to link).
-    target_compile_definitions(digholo-cli PRIVATE DIGHOLO_BUILDING)
+    # CLI compiles the library source standalone into an exe — no DLL
+    # surface exposed. DIGHOLO_STATIC_BUILD makes EXT_C a plain extern "C"
+    # with no dllexport/dllimport, which:
+    #   * prevents MSVC from creating a digHolo.lib + digHolo.exp next
+    #     to digHolo.exe (those would clash with digholo.lib /
+    #     digholo.exp from the shared library on case-insensitive
+    #     Windows filesystems and corrupt the test-exe's link).
+    #   * avoids the dllimport-on-definitions linker error.
+    target_compile_definitions(digholo-cli PRIVATE DIGHOLO_STATIC_BUILD)
 endif()
 
 # ---------------------------------------------------------------------------
