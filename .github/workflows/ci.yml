@@ -33,11 +33,6 @@ jobs:
   # ------------------------------------------------------------------------
   build-linux:
     name: Linux x86_64 (manylinux_2_28, static FFTW3 + libstdc++)
-    # TEMPORARILY DISABLED while iterating on the Windows wheel build —
-    # this job is already green and we don't want to burn runner minutes
-    # on it every push. Flip `if: false` → `if: true` (or delete the
-    # condition) once Windows wheel is sorted.
-    if: false
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -199,8 +194,6 @@ jobs:
   # ------------------------------------------------------------------------
   build-windows:
     name: Windows x86_64 (MKL + FFTW3)
-    # TEMPORARILY DISABLED — see build-linux comment.
-    if: false
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -388,8 +381,6 @@ jobs:
   # ------------------------------------------------------------------------
   build-wheel-linux:
     name: Wheel - Linux x86_64 (cibuildwheel)
-    # TEMPORARILY DISABLED — see build-linux comment.
-    if: false
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -440,10 +431,12 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
 
-    # NOTE: `needs: build-windows` was here so the wheel job ran sequentially
-    # after the native job (which populates the same MKL + vcpkg caches).
-    # Temporarily removed because build-windows is `if: false`'d while we
-    # iterate this job — restore it when build-windows is re-enabled.
+    # Sequential after build-windows: that job populates the MKL cache (same
+    # key used here), so by the time this job starts, MKL install is a cache
+    # hit and we skip the 10-minute oneAPI installer. The wheel build no
+    # longer uses vcpkg (it builds FFTW3 from source instead — see comments
+    # in the FFTW3 build step) so the vcpkg cache is no longer shared.
+    needs: build-windows
 
     env:
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
