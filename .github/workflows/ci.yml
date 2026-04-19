@@ -28,6 +28,7 @@ env:
   # for reproducibility; bump as needed.
   FFTW_VERSION: "3.3.10"
 
+
 jobs:
   # ------------------------------------------------------------------------
   build-linux:
@@ -42,7 +43,7 @@ jobs:
       image: quay.io/pypa/manylinux_2_28_x86_64:latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # ---- Intel oneAPI MKL via yum -----------------------------------
       - name: Add Intel oneAPI yum repo
@@ -63,7 +64,7 @@ jobs:
       # a build-time failure means we re-pay the install cost every retry.
       - name: Restore Intel oneAPI MKL cache
         id: cache-mkl
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /opt/intel/oneapi
           key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
@@ -75,7 +76,7 @@ jobs:
 
       - name: Save Intel oneAPI MKL cache
         if: steps.cache-mkl.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: /opt/intel/oneapi
           key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
@@ -83,7 +84,7 @@ jobs:
       # ---- FFTW3 built from source, static, single precision, -fPIC ---
       - name: Restore static FFTW3 cache
         id: cache-fftw
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: /usr/local/fftw3
           key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
@@ -111,7 +112,7 @@ jobs:
 
       - name: Save static FFTW3 cache
         if: steps.cache-fftw.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: /usr/local/fftw3
           key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
@@ -183,7 +184,7 @@ jobs:
           cp    README.md build.md                  artefacts/digholo-linux-x64/
           ls -la artefacts/digholo-linux-x64/lib artefacts/digholo-linux-x64/bin
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digholo-linux-x64
           path: artefacts/digholo-linux-x64/
@@ -201,7 +202,7 @@ jobs:
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # NOTE: do NOT use ilammy/msvc-dev-cmd here — that action overrides
       # VCPKG_ROOT with its own bundled vcpkg path, breaking the toolchain
@@ -230,7 +231,7 @@ jobs:
       # cost on retry.
       - name: Restore vcpkg binary cache
         id: cache-vcpkg
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
@@ -240,7 +241,7 @@ jobs:
       # ---- Intel oneAPI MKL --------------------------------------------
       - name: Restore Intel oneAPI MKL cache
         id: cache-oneapi
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
@@ -276,7 +277,7 @@ jobs:
       # job mustn't cause us to re-pay the 15-minute install on retry.
       - name: Save Intel oneAPI MKL cache
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
@@ -309,7 +310,7 @@ jobs:
       # discard the work vcpkg just did.
       - name: Save vcpkg binary cache
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
@@ -370,7 +371,7 @@ jobs:
           Copy-Item README.md, build.md $stage
           Get-ChildItem -Recurse $stage
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digholo-windows-x64
           path: artefacts/digholo-windows-x64/
@@ -397,9 +398,9 @@ jobs:
     # the image and the before-all install steps.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -417,7 +418,7 @@ jobs:
           # cibuildwheel will still smoke-test it via `test-command`.
           CIBW_BUILD: "cp311-manylinux_x86_64"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digholo-wheel-linux
           path: wheelhouse/*.whl
@@ -441,7 +442,7 @@ jobs:
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # vcpkg + MKL setup duplicates build-windows. Tolerate the duplication
       # for now; if it gets painful, factor into a composite action under
@@ -460,7 +461,7 @@ jobs:
       # save means we won't accidentally overwrite a good cache with a stale
       # one if a wheel-side regression sneaks through.
       - name: Restore vcpkg binary cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
@@ -469,7 +470,7 @@ jobs:
 
       - name: Restore Intel oneAPI MKL cache
         id: cache-oneapi
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
@@ -512,7 +513,7 @@ jobs:
             }
           }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -540,9 +541,21 @@ jobs:
         env:
           CIBW_BUILD: "cp311-win_amd64"
 
-      # Diagnostic — only runs if the wheel build/test step failed. Unzip the
-      # wheel and dump digholo.dll's dependencies + the package dir contents,
-      # so we can see whether delvewheel bundled all the right DLLs and what
+      # Test the wheel in a separate step (cibuildwheel's built-in test
+      # invocation is disabled in pyproject.toml's [tool.cibuildwheel.windows]
+      # so the wheel is always saved, regardless of test outcome). This makes
+      # iteration on Windows-side bugs much faster — no rebuild needed to
+      # inspect a failing wheel.
+      - name: Test wheel
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem wheelhouse/*.whl | Select-Object -First 1
+          python -m pip install "$($whl.FullName)[test]"
+          python -m pytest python/tests -v
+
+      # Diagnostic — only runs if the test step failed. Unzip the wheel and
+      # dump digholo.dll's dependencies + the package dir contents, so we
+      # can see whether delvewheel bundled all the right DLLs and what
       # transitive deps the loader is failing to resolve.
       - name: Diagnose wheel test failure
         if: failure()
@@ -565,7 +578,8 @@ jobs:
             & $dumpbin /dependents $dll.FullName
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: digholo-wheel-windows
           path: wheelhouse/*.whl
@@ -582,7 +596,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist/
 
@@ -599,7 +613,7 @@ jobs:
           ls -la ..
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           fail_on_unmatched_files: true

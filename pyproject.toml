@@ -125,6 +125,19 @@ CPATH             = "/usr/local/fftw3/include"
 [tool.cibuildwheel.windows]
 # Windows install handled by the parent CI job's MKL+vcpkg setup steps —
 # cibuildwheel inherits the host env (MKLROOT, CMAKE_PREFIX_PATH, etc).
+#
+# delvewheel auto-bundles non-system DLL dependencies into the wheel.
+# Without it, anything digholo.dll links against (FFTW, MKL bits that
+# slip through static linking, MSVC runtime) won't be findable in
+# cibuildwheel's stripped-down nuget-Python test venv. With it, the
+# wheel becomes self-contained.
+repair-wheel-command = "delvewheel repair -w {dest_dir} -v {wheel}"
+
+# Skip cibuildwheel's built-in test invocation. We run pytest in a
+# separate workflow step so the wheel is always saved even if tests
+# fail — makes Windows-side debugging much faster (no need to re-run
+# the 5-minute wheel build to inspect it).
+test-skip = "*"
 
 # ---------------------------------------------------------------------------
 # pytest
