@@ -33,6 +33,11 @@ jobs:
   # ------------------------------------------------------------------------
   build-linux:
     name: Linux x86_64 (manylinux_2_28, static FFTW3 + libstdc++)
+    # TEMPORARILY DISABLED while iterating on the Windows wheel build —
+    # this job is already green and we don't want to burn runner minutes
+    # on it every push. Flip `if: false` → `if: true` (or delete the
+    # condition) once Windows wheel is sorted.
+    if: false
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -194,6 +199,8 @@ jobs:
   # ------------------------------------------------------------------------
   build-windows:
     name: Windows x86_64 (MKL + FFTW3)
+    # TEMPORARILY DISABLED — see build-linux comment.
+    if: false
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -381,6 +388,8 @@ jobs:
   # ------------------------------------------------------------------------
   build-wheel-linux:
     name: Wheel - Linux x86_64 (cibuildwheel)
+    # TEMPORARILY DISABLED — see build-linux comment.
+    if: false
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
@@ -431,11 +440,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
 
-    # Sequential after build-windows: that job populates both caches
-    # (oneAPI MKL + vcpkg binary cache) on cold runs, so by the time this
-    # job starts, cache hits are guaranteed and we don't pay the install
-    # cost twice.
-    needs: build-windows
+    # NOTE: `needs: build-windows` was here so the wheel job ran sequentially
+    # after the native job (which populates the same MKL + vcpkg caches).
+    # Temporarily removed because build-windows is `if: false`'d while we
+    # iterate this job — restore it when build-windows is re-enabled.
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
@@ -517,8 +525,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==2.21.3
+      - name: Install cibuildwheel + delvewheel
+        # delvewheel is the wheel-repair tool we configured cibuildwheel
+        # to invoke (in pyproject.toml's [tool.cibuildwheel.windows]).
+        # cibuildwheel doesn't auto-install repair tools — the user is
+        # expected to provide them on PATH.
+        run: python -m pip install cibuildwheel==2.21.3 delvewheel
 
       - name: Build wheel
         # Run from repo root so cibuildwheel sees the whole project (the
