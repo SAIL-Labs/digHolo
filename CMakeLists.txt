@@ -179,6 +179,20 @@ endif()
 if(DIGHOLO_IS_APPLE_SILICON)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     message(STATUS "digHolo: using Apple Accelerate framework = ${ACCELERATE_FRAMEWORK}")
+
+    # Homebrew's FFTW3 splits the threads API into a separate dylib
+    # (libfftw3f_threads.dylib), whereas the Linux CI build compiles FFTW3
+    # without --enable-threads and bundles no-op thread stubs into the main
+    # libfftw3f. digHolo.cpp calls fftwf_init_threads / fftwf_plan_with_nthreads
+    # unconditionally, so we need the separate threads lib on macOS.
+    find_library(FFTW3F_THREADS_LIBRARY NAMES fftw3f_threads libfftw3f_threads
+                 HINTS ${FFTW3F_INCLUDE_DIR}/../lib /opt/homebrew/lib /usr/local/lib)
+    if(NOT FFTW3F_THREADS_LIBRARY)
+        message(FATAL_ERROR
+            "libfftw3f_threads not found. On macOS install via Homebrew: "
+            "`brew install fftw` (ships libfftw3f_threads.dylib).")
+    endif()
+    message(STATUS "digHolo: FFTW3f threads lib = ${FFTW3F_THREADS_LIBRARY}")
 else()
     set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
     set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
@@ -257,6 +271,7 @@ function(_digholo_apply_compile_settings target)
     if(DIGHOLO_IS_APPLE_SILICON)
         target_link_libraries(${target} PRIVATE
             ${_DIGHOLO_FFTW_TARGET}
+            ${FFTW3F_THREADS_LIBRARY}
             ${ACCELERATE_FRAMEWORK}
             digholo_simde
         )

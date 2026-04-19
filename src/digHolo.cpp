@@ -511,6 +511,9 @@ int writeToBitmap(unsigned char* pixelArrayRGB, int width, int height, const cha
 
 #ifdef _WIN32
 #include <intrin.h>
+#elif defined(__aarch64__) || defined(__arm64__)
+    // arm64 has no cpuid equivalent; simde provides AVX2/FMA3 coverage at
+    // compile time, so we don't need to query the CPU for feature bits.
 #else
 #include <cpuid.h>
 #endif
@@ -566,6 +569,22 @@ int cpuInfoGet(cpuINFO* c)
 	__cpuidex((int*)&cpuInfo[0], a, 0);
 	avx2 = cpuInfo[1] >> 5 & 1;
 	avx512f = cpuInfo[1] >> 16 & 1;
+#elif defined(__aarch64__) || defined(__arm64__)
+	// arm64 (Apple Silicon): no CPUID equivalent. simde provides AVX2/FMA3
+	// coverage at compile time, so report them as available. Brand string is
+	// filled with a fixed label so downstream code (FFTW wisdom filename,
+	// logging) has something sensible to key on.
+	(void)a;  // suppress unused-variable warning
+	const char* brandLabel = "Apple Silicon (arm64)";
+	const size_t brandLen  = std::strlen(brandLabel);
+	for (size_t i = 0; i < brandLen && i < 0x40; ++i)
+	{
+		c[0].brand[i] = brandLabel[i];
+	}
+	avx      = 1;
+	fma3     = 1;
+	avx2     = 1;
+	avx512f  = 0;
 #else
 	unsigned int cpuInfo[4];
 
