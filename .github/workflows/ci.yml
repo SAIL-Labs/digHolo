@@ -540,6 +540,31 @@ jobs:
         env:
           CIBW_BUILD: "cp311-win_amd64"
 
+      # Diagnostic — only runs if the wheel build/test step failed. Unzip the
+      # wheel and dump digholo.dll's dependencies + the package dir contents,
+      # so we can see whether delvewheel bundled all the right DLLs and what
+      # transitive deps the loader is failing to resolve.
+      - name: Diagnose wheel test failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem wheelhouse/*.whl -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $whl) { Write-Host "(no wheel produced)"; exit 0 }
+          Write-Host "--- $($whl.Name) ($([math]::Round($whl.Length/1024, 1)) KB) ---"
+          $extractDir = "wheelhouse/_extracted"
+          Expand-Archive -Force -Path $whl.FullName -DestinationPath $extractDir
+          Get-ChildItem -Recurse $extractDir | Format-Table Mode, Length, FullName -AutoSize
+
+          $vswhere = "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          $msvcVerDir = Get-ChildItem "$vsInstall\VC\Tools\MSVC" | Sort-Object Name -Desc | Select-Object -First 1
+          $dumpbin = "$($msvcVerDir.FullName)\bin\Hostx64\x64\dumpbin.exe"
+          $dll = Get-ChildItem -Recurse "$extractDir/digholo*.dll" | Select-Object -First 1
+          if ($dll) {
+            Write-Host "--- dumpbin /dependents on $($dll.FullName) ---"
+            & $dumpbin /dependents $dll.FullName
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: digholo-wheel-windows

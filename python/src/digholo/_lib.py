@@ -45,6 +45,18 @@ def _candidate_lib_paths() -> list[Path]:
 
 
 def _load_library() -> CDLL:
+    pkg_dir = Path(__file__).resolve().parent
+
+    # On Python ≥ 3.8 / Windows, ctypes.CDLL no longer adds the DLL's own
+    # directory to the search path for transitive deps. Tell the loader to
+    # also look next to digholo.dll so any DLL that delvewheel bundled into
+    # the package (MKL runtime, FFTW3, anything else) resolves cleanly.
+    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+        try:
+            os.add_dll_directory(str(pkg_dir))
+        except (OSError, FileNotFoundError):
+            pass
+
     last_err: Exception | None = None
     for candidate in _candidate_lib_paths():
         if candidate.exists():
