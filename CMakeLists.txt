@@ -236,6 +236,26 @@ if(DIGHOLO_BUILD_TESTING)
 endif()
 
 # ---------------------------------------------------------------------------
+# Python wheel install (only when invoked by scikit-build-core)
+#
+# scikit-build-core sets ${SKBUILD} when building a wheel, and reads the
+# component-tagged install rules below. The shared library lands next to
+# the package's __init__.py inside the wheel, where the Python loader can
+# find it via a relative path.
+# ---------------------------------------------------------------------------
+if(SKBUILD)
+    install(TARGETS digholo
+        LIBRARY DESTINATION digholo COMPONENT python
+        RUNTIME DESTINATION digholo COMPONENT python
+        ARCHIVE EXCLUDE_FROM_ALL
+    )
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/digHolo.h"
+        DESTINATION digholo/include
+        COMPONENT   python
+    )
+endif()
+
+# ---------------------------------------------------------------------------
 # Install / packaging
 # ---------------------------------------------------------------------------
 if(DIGHOLO_INSTALL)

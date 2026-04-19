@@ -180,7 +180,6 @@ jobs:
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
 
     steps:
@@ -201,12 +200,19 @@ jobs:
           }
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
+      # vcpkg's default binary cache on Windows lives under %LOCALAPPDATA%
+      # (typically C:\Users\runneradmin\AppData\Local\vcpkg\archives). We
+      # used to override it with VCPKG_DEFAULT_BINARY_CACHE pointing at the
+      # workspace, but vcpkg complained "Environment variable
+      # VCPKG_DEFAULT_BINARY_CACHE must be a directory" even when the dir
+      # existed (Windows path interpretation quirk inside vcpkg's
+      # binary-source parser). Letting vcpkg pick the default location and
+      # caching THAT works reliably.
       - name: Cache vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-bincache-x64-windows-
@@ -302,10 +308,18 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
 
+    # Sequential after build-linux. The native job doesn't share an
+    # actions/cache with this one (cibuildwheel installs MKL + builds FFTW3
+    # inside its own container, separate from the host install) — but
+    # waiting until the native build is green gives faster feedback when
+    # the Linux build itself is broken (we don't burn 10 min of cibuildwheel
+    # time only to find out the C++ wouldn't compile).
+    needs: build-linux
+
     # Note: this job runs on the HOST runner, NOT inside a container.
     # cibuildwheel itself spawns the manylinux_2_28 container internally
-    # — its [tool.cibuildwheel.linux] block in python/pyproject.toml
-    # configures the image and the before-all install steps.
+    # — its [tool.cibuildwheel.linux] block in pyproject.toml configures
+    # the image and the before-all install steps.
 
     steps:
       - uses: actions/checkout@v4
@@ -318,7 +332,9 @@ jobs:
         run: python -m pip install cibuildwheel==2.21.3
 
       - name: Build wheel
-        working-directory: python
+        # cibuildwheel mounts the package directory into the manylinux
+        # container as /project. We need the whole project (CMakeLists,
+        # src/, python/) visible there — so run from the repo root.
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
           # Pure-ctypes wheel: build only one Python version, the resulting
@@ -329,7 +345,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: digholo-wheel-linux
-          path: python/wheelhouse/*.whl
+          path: wheelhouse/*.whl
           if-no-files-found: error
           retention-days: 14
 
@@ -339,9 +355,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
 
+    # Sequential after build-windows: that job populates both caches
+    # (oneAPI MKL + vcpkg binary cache) on cold runs, so by the time this
+    # job starts, cache hits are guaranteed and we don't pay the install
+    # cost twice.
+    needs: build-windows
+
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
 
     steps:
@@ -358,12 +379,11 @@ jobs:
           }
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
       - name: Cache vcpkg binary cache
         uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-bincache-x64-windows-
@@ -419,7 +439,9 @@ jobs:
         run: python -m pip install cibuildwheel==2.21.3
 
       - name: Build wheel
-        working-directory: python
+        # Run from repo root so cibuildwheel sees the whole project (the
+        # wheel's CMake build pulls in the root CMakeLists which depends
+        # on src/ and the rest of the tree).
         shell: pwsh
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
@@ -428,7 +450,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: digholo-wheel-windows
-          path: python/wheelhouse/*.whl
+          path: wheelhouse/*.whl
           if-no-files-found: error
           retention-days: 14
 

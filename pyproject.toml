@@ -6,7 +6,7 @@ build-backend = "scikit_build_core.build"
 name = "digholo"
 version = "1.0.0"
 description = "High-speed off-axis digital holography and Hermite-Gaussian decomposition"
-readme = { file = "README.md", content-type = "text/markdown" }
+readme = { file = "python/README.md", content-type = "text/markdown" }
 license = { text = "MIT" }
 authors = [
     { name = "Joel Carpenter", email = "j.carpenter@uq.edu.au" },
@@ -43,22 +43,23 @@ Issues        = "https://github.com/SAIL-Labs/digHolo/issues"
 # scikit-build-core
 # ---------------------------------------------------------------------------
 [tool.scikit-build]
-# CMake source dir is THIS directory (python/), whose CMakeLists.txt wraps the
-# parent project via add_subdirectory(..). We don't need to rebuild the
-# library per Python version — it links zero Python symbols.
+# Build using the project's main CMakeLists at the repo root. The wheel-
+# specific install rules in that file are gated on `if(SKBUILD)` so the
+# rest of the project (CLI, tests, install/export targets) keeps building
+# normally for non-wheel consumers.
 cmake.source-dir = "."
 cmake.version    = ">=3.21"
 build-dir        = "build/{wheel_tag}"
 
-# The Python package source lives under src/digholo (PEP 621 src layout).
-wheel.packages = ["src/digholo"]
+# Python package layout.
+wheel.packages = ["python/src/digholo"]
 
 # This wheel ships a vendored shared library but does NOT link libpython.
 # Tag it as `py3-none-<platform>` so a single binary serves every CPython
 # (and PyPy) on the target OS.
 wheel.py-api = "py3"
 
-# Files installed by CMake into the wheel root.
+# Only install files tagged with the `python` component into the wheel.
 install.components = ["python"]
 
 # Reproducible builds.
@@ -79,18 +80,16 @@ MKL_THREADING              = "sequential"
 # cibuildwheel
 # ---------------------------------------------------------------------------
 [tool.cibuildwheel]
-# Build for CPython 3.9–3.13 plus PyPy 3.10. Skip musllinux (manylinux only)
-# and 32-bit (digHolo is x86-64-only).
-build       = "cp39-* cp310-* cp311-* cp312-* cp313-* pp310-*"
+# Pure-ctypes wheel: build only one Python version. The resulting
+# py3-none-<platform> wheel works on every CPython 3.x and PyPy.
+build       = "cp311-*"
 skip        = "*-musllinux* *-win32 *-manylinux_i686"
 archs       = ["auto64"]
 
-# Smoke-test the built wheel by importing it and running the package tests.
+# Smoke-test the built wheel by running the package tests.
 test-extras  = ["test"]
 test-command = "pytest {project}/python/tests -v"
 
-# Override per-platform: install MKL + build static FFTW3 before the wheel
-# build, exactly as the C++ build-linux job does.
 [tool.cibuildwheel.linux]
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
 before-all = """
@@ -124,9 +123,8 @@ LIBRARY_PATH      = "/usr/local/fftw3/lib"
 CPATH             = "/usr/local/fftw3/include"
 
 [tool.cibuildwheel.windows]
-# Windows install handled by the parent CI job's `before-all` (we rely on the
-# same vcpkg + oneAPI install the C++ build-windows job sets up).
-before-all = ""
+# Windows install handled by the parent CI job's MKL+vcpkg setup steps —
+# cibuildwheel inherits the host env (MKLROOT, CMAKE_PREFIX_PATH, etc).
 
 # ---------------------------------------------------------------------------
 # pytest
@@ -134,5 +132,5 @@ before-all = ""
 [tool.pytest.ini_options]
 minversion   = "7"
 addopts      = "-ra --strict-markers --strict-config"
-testpaths    = ["tests"]
+testpaths    = ["python/tests"]
 xfail_strict = true
