@@ -322,6 +322,37 @@ jobs:
         shell: pwsh
         run: ctest --preset windows-release
 
+      # Diagnostic — only runs if Test failed. 0xc0000135 (STATUS_DLL_NOT_FOUND)
+      # doesn't say which DLL is missing. List what's actually next to the
+      # test exe, locate dumpbin.exe via vswhere, and dump dependencies for
+      # both binaries.
+      - name: Diagnose test failure (DLL deps)
+        if: failure()
+        shell: pwsh
+        run: |
+          $testdir = "build/windows-release/tests/Release"
+          Write-Host "--- Contents of $testdir ---"
+          if (Test-Path $testdir) {
+            Get-ChildItem $testdir | Format-Table Name, Length
+          } else {
+            Write-Host "(directory does not exist)"
+          }
+          Write-Host "--- Contents of build/windows-release/Release ---"
+          Get-ChildItem "build/windows-release/Release" -ErrorAction SilentlyContinue | Format-Table Name, Length
+
+          $vswhere = "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          $msvcVerDir = Get-ChildItem "$vsInstall\VC\Tools\MSVC" | Sort-Object Name -Desc | Select-Object -First 1
+          $dumpbin = "$($msvcVerDir.FullName)\bin\Hostx64\x64\dumpbin.exe"
+          Write-Host "--- dumpbin /dependents on test_smoke.exe ---"
+          if (Test-Path "$testdir/test_smoke.exe") {
+            & $dumpbin /dependents "$testdir/test_smoke.exe"
+          }
+          Write-Host "--- dumpbin /dependents on digholo.dll ---"
+          if (Test-Path "build/windows-release/Release/digholo.dll") {
+            & $dumpbin /dependents "build/windows-release/Release/digholo.dll"
+          }
+
       # ---- Artefacts ----------------------------------------------------
       - name: Stage release artefacts
         shell: pwsh

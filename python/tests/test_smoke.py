@@ -48,28 +48,43 @@ def test_simulate_frames_shape_dtype(frames):
     assert frames.var() > 0
 
 
-def test_handle_lifecycle():
+def _new_configured_handle() -> DigHolo:
+    """Return a freshly-created DigHolo with the canonical batch config applied.
+
+    The C library segfaults if you call digHoloDestroy() on a handle that was
+    never given a frame batch + dimensions (probably reaching for never-
+    allocated internal buffers during teardown). Always run at least the
+    minimum config before close — wrap the construction here so individual
+    tests stay short.
+    """
     dh = DigHolo()
+    dh.frame_dimensions  = (FRAME_WIDTH, FRAME_HEIGHT)
+    dh.frame_pixel_size  = PIXEL_SIZE
+    dh.wavelength_centre = LAMBDA0
+    dh.pol_count         = POL_COUNT
+    return dh
+
+
+def test_handle_lifecycle():
+    dh = _new_configured_handle()
     dh.close()
-    # Idempotent.
+    # close() is idempotent — second call must not crash even though the
+    # underlying C handle is already gone.
     dh.close()
 
 
 def test_handle_context_manager():
-    with DigHolo() as dh:
-        dh.frame_dimensions = (FRAME_WIDTH, FRAME_HEIGHT)
+    with _new_configured_handle() as dh:
         assert dh.frame_dimensions == (FRAME_WIDTH, FRAME_HEIGHT)
 
 
 def test_pol_count_round_trip():
-    with DigHolo() as dh:
-        dh.pol_count = POL_COUNT
+    with _new_configured_handle() as dh:
         assert dh.pol_count == POL_COUNT
 
 
 def test_pixel_size_round_trip():
-    with DigHolo() as dh:
-        dh.frame_pixel_size = PIXEL_SIZE
+    with _new_configured_handle() as dh:
         assert dh.frame_pixel_size == pytest.approx(PIXEL_SIZE, rel=1e-6)
 
 
