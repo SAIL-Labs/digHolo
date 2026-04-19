@@ -134,11 +134,11 @@ Unchanged. SIMD operations route through simde → NEON on macOS, and natively t
 2. Linux and Windows presets produce byte-identical library output before and after this change (verified by hash comparison of the built `libdigholo.so.1`).
 3. `tests/test_reference.cpp` is built on all platforms but skipped until reference data is committed. Once reference data lands, the test runs on all three platforms and enforces numerical agreement.
 
-## Open questions deferred to implementation
+## Resolved decisions
 
-- Specific simde commit/tag to pin to — will pick the latest stable release at implementation time.
-- Exact Accelerate header path strategy — new LAPACK interface (macOS 13.3+) vs legacy. Preference is the legacy interface since it matches the symbol names already used in `src/digHolo.cpp`, but this will be verified at implementation.
-- Whether `DIGHOLO_USE_ACCELERATE` should be an automatic consequence of `APPLE AND arm64` or a separately toggleable option. Default: automatic, for simplicity.
+- **simde version**: pin to the latest stable release tag at implementation time. No reason to pin to an older commit.
+- **Accelerate LAPACK interface**: use the modern LAPACK interface introduced in macOS 13.3 (`ACCELERATE_NEW_LAPACK` compile definition), not the legacy Fortran-style one. This means macOS 13.3 is the minimum supported version for this port.
+- **`DIGHOLO_USE_ACCELERATE` gating**: automatic consequence of `APPLE AND arm64`. No separate opt-in toggle — if you're on Apple Silicon, you get Accelerate.
 
 ## Out of scope for this change (future work)
 
