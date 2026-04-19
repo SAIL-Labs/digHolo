@@ -523,8 +523,20 @@ jobs:
         # Run from repo root so cibuildwheel sees the whole project (the
         # wheel's CMake build pulls in the root CMakeLists which depends
         # on src/ and the rest of the tree).
+        #
+        # cibuildwheel doesn't use our CMake presets — scikit-build-core
+        # invokes CMake directly. So we have to forward the vcpkg
+        # toolchain file (and triplet, and MKL paths) through the
+        # cibuildwheel-spawned subprocess via CIBW_ENVIRONMENT_WINDOWS.
+        # Use forward-slash paths — CMake accepts them and they avoid
+        # backslash-escaping headaches inside the env string.
         shell: pwsh
-        run: python -m cibuildwheel --output-dir wheelhouse
+        run: |
+          $vcpkgToolchain = "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -replace '\\', '/'
+          $mklRoot        = "$env:MKLROOT"                                    -replace '\\', '/'
+          $cmakePrefix    = "$env:CMAKE_PREFIX_PATH"                          -replace '\\', '/'
+          $env:CIBW_ENVIRONMENT_WINDOWS = "CMAKE_TOOLCHAIN_FILE=$vcpkgToolchain VCPKG_TARGET_TRIPLET=x64-windows-static-md MKLROOT='$mklRoot' CMAKE_PREFIX_PATH='$cmakePrefix'"
+          python -m cibuildwheel --output-dir wheelhouse
         env:
           CIBW_BUILD: "cp311-win_amd64"
 
