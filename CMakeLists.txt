@@ -85,8 +85,15 @@ if(DIGHOLO_PREFER_STATIC_DEPS AND NOT WIN32)
     target_link_libraries(digholo_fftw3f INTERFACE "${FFTW3F_LIBRARY}")
     set(_DIGHOLO_FFTW_TARGET digholo_fftw3f)
 else()
-    # Preferred: vcpkg / installed FFTW3Config.cmake
+    # Preferred: vcpkg / installed CMake config. Try both package-name
+    # conventions: vcpkg's fftw3 port (and recent upstream FFTW3 ≥ 3.3.10)
+    # ships `FFTW3Config.cmake` and exports `FFTW3::fftw3f` for single
+    # precision. Some older / Linux-distro packages install
+    # `FFTW3fConfig.cmake` instead. Try both.
     find_package(FFTW3f CONFIG QUIET)
+    if(NOT TARGET FFTW3::fftw3f)
+        find_package(FFTW3 CONFIG QUIET)
+    endif()
     if(TARGET FFTW3::fftw3f)
         set(_DIGHOLO_FFTW_TARGET FFTW3::fftw3f)
     endif()
@@ -120,6 +127,31 @@ else()
 endif()
 
 message(STATUS "digHolo: using FFTW3f target = ${_DIGHOLO_FFTW_TARGET}")
+if(FFTW3F_LIBRARY)
+    message(STATUS "digHolo: FFTW3f library file = ${FFTW3F_LIBRARY}")
+endif()
+get_target_property(_DIGHOLO_FFTW_LOC ${_DIGHOLO_FFTW_TARGET} LOCATION)
+if(_DIGHOLO_FFTW_LOC AND NOT _DIGHOLO_FFTW_LOC STREQUAL "_DIGHOLO_FFTW_LOC-NOTFOUND")
+    message(STATUS "digHolo: FFTW3f resolved location = ${_DIGHOLO_FFTW_LOC}")
+endif()
+get_target_property(_DIGHOLO_FFTW_INCS ${_DIGHOLO_FFTW_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+if(_DIGHOLO_FFTW_INCS)
+    message(STATUS "digHolo: FFTW3f include dirs   = ${_DIGHOLO_FFTW_INCS}")
+endif()
+
+# Sanity check: refuse to link against Intel MKL's FFTW-compatible interface
+# stub (fftw3f.lib under the oneAPI tree) — it's missing the real-to-real DCTs
+# that AutoAlign needs. If the manual find_library accidentally walked the
+# MKL lib dir on Windows and picked it up, fail loudly with a clear message.
+if(FFTW3F_LIBRARY MATCHES "[Ii]ntel.*one[Aa][Pp][Ii]")
+    message(FATAL_ERROR
+        "Refusing to use Intel MKL's FFTW-compatible interface as the "
+        "FFTW3 backend (found at ${FFTW3F_LIBRARY}). This stub is missing "
+        "the real-to-real DCTs digHoloAutoAlign requires. "
+        "Install a real FFTW3 (vcpkg fftw3 / libfftw3-dev) and ensure its "
+        "CMake config is on CMAKE_PREFIX_PATH ahead of MKL.")
+endif()
+
 if(DIGHOLO_PREFER_STATIC_DEPS)
     message(STATUS "digHolo: DIGHOLO_PREFER_STATIC_DEPS=ON (portable shared lib)")
 endif()
