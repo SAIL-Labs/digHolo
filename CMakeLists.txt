@@ -188,6 +188,29 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# Dependency: simde (Apple Silicon only — translates x86 AVX2/FMA3 intrinsics
+# to NEON at compile time). Pulled via FetchContent and pinned; the tag
+# is baked in so builds are reproducible across machines.
+# ---------------------------------------------------------------------------
+if(DIGHOLO_IS_APPLE_SILICON)
+    include(FetchContent)
+    FetchContent_Declare(
+        simde
+        GIT_REPOSITORY https://github.com/simd-everywhere/simde.git
+        GIT_TAG        v0.8.2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(simde)
+
+    # simde is header-only; expose its include dir as an INTERFACE target.
+    add_library(digholo_simde INTERFACE)
+    target_include_directories(digholo_simde INTERFACE
+        "${simde_SOURCE_DIR}"
+    )
+    message(STATUS "digHolo: simde headers = ${simde_SOURCE_DIR}")
+endif()
+
+# ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
 set(DIGHOLO_PUBLIC_HEADERS src/digHolo.h)
@@ -235,10 +258,12 @@ function(_digholo_apply_compile_settings target)
         target_link_libraries(${target} PRIVATE
             ${_DIGHOLO_FFTW_TARGET}
             ${ACCELERATE_FRAMEWORK}
+            digholo_simde
         )
         target_compile_definitions(${target} PRIVATE
             DIGHOLO_USE_ACCELERATE
             ACCELERATE_NEW_LAPACK
+            DIGHOLO_USE_SIMDE
         )
     else()
         target_link_libraries(${target} PRIVATE
