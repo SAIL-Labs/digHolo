@@ -446,36 +446,13 @@ jobs:
     # iterate this job — restore it when build-windows is re-enabled.
 
     env:
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
+      FFTW3_INSTALL_DIR: ${{ github.workspace }}\fftw3-install
 
     steps:
       - uses: actions/checkout@v6
 
-      # vcpkg + MKL setup duplicates build-windows. Tolerate the duplication
-      # for now; if it gets painful, factor into a composite action under
-      # .github/actions/setup-windows-deps.
-      - name: Bootstrap vcpkg
-        shell: pwsh
-        run: |
-          if (Test-Path "$env:VCPKG_ROOT") {
-            Remove-Item -Recurse -Force "$env:VCPKG_ROOT"
-          }
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-
-      # The native build-windows job is the cache producer (it has explicit
-      # save steps). This wheel job is consumer-only; restore-only with no
-      # save means we won't accidentally overwrite a good cache with a stale
-      # one if a wheel-side regression sneaks through.
-      - name: Restore vcpkg binary cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ~\AppData\Local\vcpkg\archives
-          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
-          restore-keys: |
-            vcpkg-bincache-x64-windows-
-
+      # ---- Intel oneAPI MKL ---------------------------------------------
       - name: Restore Intel oneAPI MKL cache
         id: cache-oneapi
         uses: actions/cache/restore@v5
@@ -483,8 +460,6 @@ jobs:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
 
-      # The native job ran first and populated the cache; these install
-      # steps are fall-throughs in case the cache somehow missed.
       - name: Download Intel oneAPI Base Toolkit installer
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: pwsh
@@ -507,6 +482,13 @@ jobs:
             --log-dir=.
           rmdir /s /q webimage_extracted
 
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
       - name: Source oneAPI environment
         shell: pwsh
         run: |
@@ -521,6 +503,55 @@ jobs:
             }
           }
 
+      # ---- FFTW3 from source --------------------------------------------
+      # We build FFTW3 from source rather than pulling vcpkg's port. Reasons:
+      #   * vcpkg's fftw3 with x64-windows-static-md was producing a fftw3f.dll
+      #     dependency in our resulting digholo.dll (CMake found something
+      #     dynamic somewhere in the search path despite the static triplet).
+      #     Couldn't see what cmake was doing because scikit-build-core hides
+      #     STATUS messages from cibuildwheel's pip-wheel subprocess.
+      #   * Source build is identical to the Linux wheel approach — same
+      #     pinned FFTW_VERSION, same enabled features, deterministic.
+      #   * No vcpkg manifest required for the wheel build.
+      - name: Restore static FFTW3 cache
+        id: cache-fftw
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.FFTW3_INSTALL_DIR }}
+          key: fftw3-${{ env.FFTW_VERSION }}-windows-static-single-avx2
+
+      - name: Build static FFTW3 (Windows)
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tmpdir = "${env:TEMP}\fftw-build"
+          New-Item -ItemType Directory -Force -Path $tmpdir | Out-Null
+          Set-Location $tmpdir
+          $url = "https://www.fftw.org/fftw-${env:FFTW_VERSION}.tar.gz"
+          curl.exe -fsSLO $url
+          tar xf "fftw-${env:FFTW_VERSION}.tar.gz"
+          Set-Location "fftw-${env:FFTW_VERSION}"
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_INSTALL_PREFIX="${env:FFTW3_INSTALL_DIR}" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_TESTS=OFF `
+            -DENABLE_FLOAT=ON `
+            -DENABLE_SSE2=ON `
+            -DENABLE_AVX=ON `
+            -DENABLE_AVX2=ON
+          cmake --build build --config Release --parallel
+          cmake --install build --config Release
+
+      - name: Save static FFTW3 cache
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.FFTW3_INSTALL_DIR }}
+          key: fftw3-${{ env.FFTW_VERSION }}-windows-static-single-avx2
+
+      # ---- Python + cibuildwheel ----------------------------------------
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -533,25 +564,29 @@ jobs:
         run: python -m pip install cibuildwheel==2.21.3 delvewheel
 
       - name: Build wheel
-        # Run from repo root so cibuildwheel sees the whole project (the
-        # wheel's CMake build pulls in the root CMakeLists which depends
-        # on src/ and the rest of the tree).
-        #
-        # cibuildwheel doesn't use our CMake presets — scikit-build-core
-        # invokes CMake directly. So we have to forward the vcpkg
-        # toolchain file (and triplet, and MKL paths) through the
-        # cibuildwheel-spawned subprocess via CIBW_ENVIRONMENT_WINDOWS.
-        # Use forward-slash paths — CMake accepts them and they avoid
-        # backslash-escaping headaches inside the env string.
+        # cibuildwheel's pip-wheel invokes scikit-build-core which invokes
+        # CMake. We forward the FFTW3 install dir + MKL paths so CMake's
+        # find_package picks them up. FFTW3 is listed first in
+        # CMAKE_PREFIX_PATH so its config is found before MKL's lib dir
+        # (which contains a fftw3f.lib that's a stub for MKL's
+        # FFTW-compatible interface — wrong thing).
+        # Also enable scikit-build-core's verbose CMake output so the next
+        # CI iteration can see what find_package actually picks.
         shell: pwsh
         run: |
-          $vcpkgToolchain = "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -replace '\\', '/'
-          $mklRoot        = "$env:MKLROOT"                                    -replace '\\', '/'
-          $cmakePrefix    = "$env:CMAKE_PREFIX_PATH"                          -replace '\\', '/'
-          $env:CIBW_ENVIRONMENT_WINDOWS = "CMAKE_TOOLCHAIN_FILE=$vcpkgToolchain VCPKG_TARGET_TRIPLET=x64-windows-static-md MKLROOT='$mklRoot' CMAKE_PREFIX_PATH='$cmakePrefix'"
+          $fftw3Dir    = "$env:FFTW3_INSTALL_DIR" -replace '\\', '/'
+          $mklRoot     = "$env:MKLROOT"           -replace '\\', '/'
+          $cmakePrefix = "$env:CMAKE_PREFIX_PATH" -replace '\\', '/'
+          # FFTW3 install dir first on CMAKE_PREFIX_PATH so find_package
+          # resolves to it before the MKL-bundled fftw3f.lib stub.
+          $env:CIBW_ENVIRONMENT_WINDOWS = "MKLROOT='$mklRoot' CMAKE_PREFIX_PATH='$fftw3Dir;$cmakePrefix'"
           python -m cibuildwheel --output-dir wheelhouse
         env:
           CIBW_BUILD: "cp311-win_amd64"
+          # Make scikit-build-core surface CMake's STATUS messages so the
+          # FFTW3 picks (and our hard-fail check on MKL FFTW stubs) are
+          # visible in the cibuildwheel log.
+          CIBW_BUILD_VERBOSITY: "1"
 
       # Test the wheel in a separate step (cibuildwheel's built-in test
       # invocation is disabled in pyproject.toml's [tool.cibuildwheel.windows]
