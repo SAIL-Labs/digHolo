@@ -51,12 +51,23 @@
     // ACCELERATE_NEW_LAPACK is defined at the compiler command line by CMake.
     // Accelerate exposes standard LAPACK / CBLAS symbol names, so call sites
     // below (cgesvd, sgels, cblas_cgemv, cblas_cgemm) need no changes.
-    #include <Accelerate/Accelerate.h>
+    //
+    // We deliberately include only the narrow vecLib headers rather than the
+    // umbrella <Accelerate/Accelerate.h>. The umbrella pulls in CoreServices
+    // / CarbonCore / fp.h, which declares an extern `const double_t pi`
+    // that clashes with digHolo's own `const float pi` at line ~109. Narrow
+    // includes avoid Carbon entirely.
+    #include <vecLib/cblas_new.h>
+    #include <vecLib/lapack.h>
     // Modern LAPACK type. In C++ this is std::complex<float>; layout-
     // compatible with digHolo's internal complex64, so we only use it as a
     // cast target at BLAS/LAPACK call boundaries. Note: the legacy
     // __CLPK_complex struct is NOT exposed when ACCELERATE_NEW_LAPACK is set.
     #define BLAS_COMPLEXTYPE __LAPACK_float_complex
+    // Accelerate's CBLAS uses the historical name CBLAS_ORDER. The
+    // MKL/reference CBLAS convention renamed it CBLAS_LAYOUT; digHolo.cpp
+    // uses the newer name at a few call sites, so alias it.
+    typedef enum CBLAS_ORDER CBLAS_LAYOUT;
     // Modern LAPACK exposes trailing-underscore symbols; map the undecorated
     // names the code uses onto them. Matches the OpenBLAS Fortran-interface
     // aliasing in the #else branch below.
@@ -3103,7 +3114,7 @@ void UUconj(int Ny, int Nx, complex64* A, complex64* B, complex64* y)
 
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
-		cblas_cgemm(CBLAS_LAYOUT::CblasColMajor, CBLAS_TRANSPOSE::CblasConjTrans, CBLAS_TRANSPOSE::CblasNoTrans, M, N, K, &alpha, A, LDA, B, LDB, &beta, y, LDC);
+		cblas_cgemm(CBLAS_LAYOUT::CblasColMajor, CBLAS_TRANSPOSE::CblasConjTrans, CBLAS_TRANSPOSE::CblasNoTrans, M, N, K, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)A, LDA, (BLAS_COMPLEXTYPE*)B, LDB, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)y, LDC);
 #else
 		const char transA = 'C';
 		const char transB = 'N';
@@ -5042,7 +5053,7 @@ public: complex64* HGtoLG(complex64** HGcoefs, complex64** LGcoefs, int batchCou
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
 				auto tpose = inverseTransform ? CBLAS_TRANSPOSE::CblasConjTrans : CBLAS_TRANSPOSE::CblasNoTrans;
-				cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, mgIDX, mgIDX, &alpha, U, mgIDX, coefsHG, incx, &beta, coefsLG, incy);
+				cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, mgIDX, mgIDX, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)U, mgIDX, (BLAS_COMPLEXTYPE*)coefsHG, incx, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)coefsLG, incy);
 #else
 				const char trans = inverseTransform ? 'C' : 'N';
 				cgemv(&trans, &mgIDX, &mgIDX, (BLAS_COMPLEXTYPE*)alpha, (BLAS_COMPLEXTYPE*)U, &mgIDX, (BLAS_COMPLEXTYPE*)coefsHG, &incx, (BLAS_COMPLEXTYPE*)beta, (BLAS_COMPLEXTYPE*)coefsLG, &incy);
@@ -9610,7 +9621,7 @@ public: int SetWavelengthArbitrary(float* wavelengths, int lambdaCount)
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
 				   auto tpose = inverseTransform ? CBLAS_TRANSPOSE::CblasConjTrans : CBLAS_TRANSPOSE::CblasNoTrans;
-				   cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, n, m, &alpha, U, n, coefsHG, incx, &beta, coefsCustom, incy);
+				   cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, n, m, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)U, n, (BLAS_COMPLEXTYPE*)coefsHG, incx, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)coefsCustom, incy);
 #else
 				   const char trans = inverseTransform ? 'C' : 'N';
 				   cgemv(&trans, &n, &m, (BLAS_COMPLEXTYPE*)alpha, (BLAS_COMPLEXTYPE*)U, &n, (BLAS_COMPLEXTYPE*)coefsHG, &incx, (BLAS_COMPLEXTYPE*)beta, (BLAS_COMPLEXTYPE*)coefsCustom, &incy);
