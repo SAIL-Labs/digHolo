@@ -52,7 +52,11 @@
     // Accelerate exposes standard LAPACK / CBLAS symbol names, so call sites
     // below (cgesvd, sgels, cblas_cgemv, cblas_cgemm) need no changes.
     #include <Accelerate/Accelerate.h>
-    #define BLAS_COMPLEXTYPE __CLPK_complex
+    // Modern LAPACK type. In C++ this is std::complex<float>; layout-
+    // compatible with digHolo's internal complex64, so we only use it as a
+    // cast target at BLAS/LAPACK call boundaries. Note: the legacy
+    // __CLPK_complex struct is NOT exposed when ACCELERATE_NEW_LAPACK is set.
+    #define BLAS_COMPLEXTYPE __LAPACK_float_complex
     // Modern LAPACK exposes trailing-underscore symbols; map the undecorated
     // names the code uses onto them. Matches the OpenBLAS Fortran-interface
     // aliasing in the #else branch below.
