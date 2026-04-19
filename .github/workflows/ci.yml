@@ -348,9 +348,13 @@ jobs:
           if (Test-Path "$testdir/test_smoke.exe") {
             & $dumpbin /dependents "$testdir/test_smoke.exe"
           }
-          Write-Host "--- dumpbin /dependents on digholo.dll ---"
+          Write-Host "--- dumpbin /imports on test_smoke.exe (grep digholo) ---"
+          if (Test-Path "$testdir/test_smoke.exe") {
+            & $dumpbin /imports "$testdir/test_smoke.exe" | Select-String -Context 0,20 'digholo'
+          }
+          Write-Host "--- dumpbin /exports on digholo.dll (first 30) ---"
           if (Test-Path "build/windows-release/Release/digholo.dll") {
-            & $dumpbin /dependents "build/windows-release/Release/digholo.dll"
+            & $dumpbin /exports "build/windows-release/Release/digholo.dll" | Select-Object -First 30
           }
 
       # ---- Artefacts ----------------------------------------------------

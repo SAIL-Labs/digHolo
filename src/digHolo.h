@@ -146,26 +146,45 @@
 
   //Defines that handle how functions are exported to the shared object/DLL bases on C++ vs. C and Windows vs. Unix compilation
 //
-// IMPORTANT: every public function in digHolo.h is tagged with EXT_C. We need
-// to apply C linkage on every platform so the symbol names in the shared
-// library are the bare ASCII names (digHoloCreate, ...) rather than the
-// C++-mangled forms — otherwise consumers using dlopen / ctypes / dlsym (which
-// is the only way Python bindings call the library on Linux) can't find the
-// entry points.
+// EXT_C is prepended to every public API function and must:
+//   * force C linkage so dlsym / GetProcAddress / ctypes can find the bare
+//     ASCII names (no C++ mangling),
+//   * mark the symbol as exported on Windows when compiling the library,
+//     AND imported on Windows when compiling a consumer (test, user exe,
+//     Python ctypes host).
 //
-// Originally this only added `extern "C"` on Windows (because __declspec
-// implies it), leaving Linux symbols mangled. C++ callers that #include this
-// header still linked because both sides agreed on the mangled name, so the
-// bug was invisible until ctypes tried to dlsym a bare name. Fixed by adding
-// `extern "C"` unconditionally on every platform when compiling as C++.
+// The consumer/producer distinction is gated on DIGHOLO_BUILDING, which the
+// library's CMakeLists.txt defines for the `digholo` shared target and the
+// `digholo-cli` executable. Everyone else — test_smoke, external users
+// consuming digholo.dll, user code #include'ing this header — sees
+// __declspec(dllimport) and generates proper cross-DLL imports.
+//
+// Historical note: the original header unconditionally used dllexport for
+// every consumer, which caused MSVC to silently drop the digholo.dll
+// dependency from test exes (they "exported" the same symbols, so the
+// linker decided they didn't need to import them). On Linux the original
+// macro was empty — no extern "C" — which left symbols C++-mangled and
+// broke ctypes. Both are fixed here.
 #ifdef __cplusplus
-#ifdef _WIN32
-#define EXT_C extern "C" __declspec (dllexport)
+#  ifdef _WIN32
+#    ifdef DIGHOLO_BUILDING
+#      define EXT_C extern "C" __declspec(dllexport)
+#    else
+#      define EXT_C extern "C" __declspec(dllimport)
+#    endif
+#  else
+#    define EXT_C extern "C"
+#  endif
 #else
-#define EXT_C extern "C"
-#endif
-#else
-#define EXT_C
+#  ifdef _WIN32
+#    ifdef DIGHOLO_BUILDING
+#      define EXT_C __declspec(dllexport)
+#    else
+#      define EXT_C __declspec(dllimport)
+#    endif
+#  else
+#    define EXT_C
+#  endif
 #endif
 
 //The complex datatype, for compatibility with other libraries and headers, it's called 'complex64', rather than 'complex' etc., 

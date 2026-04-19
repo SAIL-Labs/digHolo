@@ -200,18 +200,17 @@ add_library(digHolo::digholo ALIAS digholo)
 
 _digholo_apply_compile_settings(digholo)
 
+# DIGHOLO_BUILDING tells digHolo.h to use __declspec(dllexport) on Windows.
+# Consumers (test exes, user code, Python ctypes host) never have this
+# defined, so they see __declspec(dllimport) — proper cross-DLL linkage.
+target_compile_definitions(digholo PRIVATE DIGHOLO_BUILDING)
+
 set_target_properties(digholo PROPERTIES
     OUTPUT_NAME    digholo
     VERSION        ${PROJECT_VERSION}
     SOVERSION      ${PROJECT_VERSION_MAJOR}
     PUBLIC_HEADER  "${DIGHOLO_PUBLIC_HEADERS}"
 )
-
-# Windows shared library: export every extern "C" symbol automatically (the
-# header uses EXT_C, not __declspec(dllexport), so we lean on this CMake helper).
-if(WIN32 AND DIGHOLO_BUILD_SHARED)
-    set_target_properties(digholo PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-endif()
 
 # ---------------------------------------------------------------------------
 # CLI executable target
@@ -225,6 +224,12 @@ if(DIGHOLO_BUILD_CLI)
     add_executable(digholo-cli ${DIGHOLO_SOURCES})
     set_target_properties(digholo-cli PROPERTIES OUTPUT_NAME digHolo)
     _digholo_apply_compile_settings(digholo-cli)
+    # CLI builds the library source into its own executable — same
+    # "producer" semantics as the shared lib, so dllexport is correct
+    # (harmless on Windows; on an .exe the exports are effectively
+    # unused, but it prevents dllimport from being applied to
+    # definitions compiled here, which would fail to link).
+    target_compile_definitions(digholo-cli PRIVATE DIGHOLO_BUILDING)
 endif()
 
 # ---------------------------------------------------------------------------
