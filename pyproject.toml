@@ -1,0 +1,149 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "digholo"
+version = "1.0.0"
+description = "High-speed off-axis digital holography and Hermite-Gaussian decomposition"
+readme = { file = "python/README.md", content-type = "text/markdown" }
+license = { text = "MIT" }
+authors = [
+    { name = "Joel Carpenter", email = "j.carpenter@uq.edu.au" },
+    { name = "SAIL Labs" },
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.21",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage      = "https://github.com/SAIL-Labs/digHolo"
+Documentation = "https://arxiv.org/abs/2204.02348"
+Source        = "https://github.com/SAIL-Labs/digHolo"
+Issues        = "https://github.com/SAIL-Labs/digHolo/issues"
+
+# ---------------------------------------------------------------------------
+# scikit-build-core
+# ---------------------------------------------------------------------------
+[tool.scikit-build]
+# Build using the project's main CMakeLists at the repo root. The wheel-
+# specific install rules in that file are gated on `if(SKBUILD)` so the
+# rest of the project (CLI, tests, install/export targets) keeps building
+# normally for non-wheel consumers.
+cmake.source-dir = "."
+cmake.version    = ">=3.21"
+build-dir        = "build/{wheel_tag}"
+
+# Python package layout.
+wheel.packages = ["python/src/digholo"]
+
+# This wheel ships a vendored shared library but does NOT link libpython.
+# Tag it as `py3-none-<platform>` so a single binary serves every CPython
+# (and PyPy) on the target OS.
+wheel.py-api = "py3"
+
+# Only install files tagged with the `python` component into the wheel.
+install.components = ["python"]
+
+# Reproducible builds.
+sdist.reproducible = true
+
+[tool.scikit-build.cmake.define]
+# Force the static-deps preset settings even when the user didn't pass a
+# preset (e.g. cibuildwheel runs `pip wheel` directly).
+DIGHOLO_BUILD_SHARED       = "ON"
+DIGHOLO_BUILD_CLI          = "OFF"
+DIGHOLO_BUILD_TESTING      = "OFF"
+DIGHOLO_INSTALL            = "OFF"
+DIGHOLO_PREFER_STATIC_DEPS = "ON"
+MKL_LINK                   = "static"
+MKL_THREADING              = "sequential"
+
+# ---------------------------------------------------------------------------
+# cibuildwheel
+# ---------------------------------------------------------------------------
+[tool.cibuildwheel]
+# Pure-ctypes wheel: build only one Python version. The resulting
+# py3-none-<platform> wheel works on every CPython 3.x and PyPy.
+build       = "cp311-*"
+skip        = "*-musllinux* *-win32 *-manylinux_i686"
+archs       = ["auto64"]
+
+# Smoke-test the built wheel by running the package tests.
+test-extras  = ["test"]
+test-command = "pytest {project}/python/tests -v"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
+before-all = """
+# Install Intel oneAPI MKL via yum
+tee /etc/yum.repos.d/oneAPI.repo > /dev/null <<EOF
+[oneAPI]
+name=Intel oneAPI repository
+baseurl=https://yum.repos.intel.com/oneapi
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+EOF
+dnf install -y intel-oneapi-mkl-devel
+
+# Build static FFTW3
+cd /tmp
+curl -fsSLO https://www.fftw.org/fftw-3.3.10.tar.gz
+tar xf fftw-3.3.10.tar.gz
+cd fftw-3.3.10
+./configure --prefix=/usr/local/fftw3 --enable-single --enable-static \\
+    --disable-shared --enable-sse2 --enable-avx --enable-avx2 \\
+    --enable-fma CFLAGS="-fPIC -O3"
+make -j"$(nproc)" install
+"""
+
+[tool.cibuildwheel.linux.environment]
+CMAKE_PREFIX_PATH = "/usr/local/fftw3:/opt/intel/oneapi/mkl/latest"
+MKLROOT           = "/opt/intel/oneapi/mkl/latest"
+LIBRARY_PATH      = "/usr/local/fftw3/lib"
+CPATH             = "/usr/local/fftw3/include"
+
+[tool.cibuildwheel.windows]
+# Windows install handled by the parent CI job's MKL+vcpkg setup steps —
+# cibuildwheel inherits the host env (MKLROOT, CMAKE_PREFIX_PATH, etc).
+#
+# delvewheel auto-bundles non-system DLL dependencies into the wheel.
+# Without it, anything digholo.dll links against (FFTW, MKL bits that
+# slip through static linking, MSVC runtime) won't be findable in
+# cibuildwheel's stripped-down nuget-Python test venv. With it, the
+# wheel becomes self-contained.
+repair-wheel-command = "delvewheel repair -w {dest_dir} -v {wheel}"
+
+# Skip cibuildwheel's built-in test invocation. We run pytest in a
+# separate workflow step so the wheel is always saved even if tests
+# fail — makes Windows-side debugging much faster (no need to re-run
+# the 5-minute wheel build to inspect it).
+test-skip = "*"
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion   = "7"
+addopts      = "-ra --strict-markers --strict-config"
+testpaths    = ["python/tests"]
+xfail_strict = true

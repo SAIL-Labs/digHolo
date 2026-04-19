@@ -1,0 +1,54 @@
+# --- Build output ---
+build/
+build-*/
+out/
+cmake-build-*/
+install/
+_deps/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/*.cmake
+!CMakePresets.json
+compile_commands.json
+
+# --- Compiled artefacts (now produced by CI, not committed) ---
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.a
+*.exe
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# --- Dependencies fetched at build time ---
+vcpkg_installed/
+.vcpkg-root
+
+# --- IDE / editor ---
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
+
+# --- Python (for the future python/ package) ---
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+dist/
+wheelhouse/

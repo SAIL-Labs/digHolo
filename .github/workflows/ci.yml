@@ -1,0 +1,663 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# Cancel in-flight PR builds when a new push lands on the same branch. Push
+# events to main / tags are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned Intel oneAPI Base Toolkit. Bump deliberately. Intel rotates the
+  # offline-installer URL hash every release — the canonical place to look
+  # for a current URL is Intel's own CI workflow at:
+  #   https://github.com/oneapi-src/oneapi-ci/blob/master/.github/workflows/build_all.yml
+  # (search for WINDOWS_BASEKIT_URL).
+  ONEAPI_VERSION_LINUX: "2025.3"
+  WINDOWS_BASEKIT_URL: "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/1f18901e-877d-469d-a41a-a10f11b39336/intel-oneapi-base-toolkit-2025.3.0.372_offline.exe"
+  WINDOWS_BASEKIT_COMPONENTS: "intel.oneapi.win.mkl.devel"
+
+  # FFTW3 version built from source inside the manylinux container. Pinned
+  # for reproducibility; bump as needed.
+  FFTW_VERSION: "3.3.10"
+
+
+jobs:
+  # ------------------------------------------------------------------------
+  build-linux:
+    name: Linux x86_64 (manylinux_2_28, static FFTW3 + libstdc++)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    # Build inside PyPA's manylinux_2_28 container (AlmaLinux 8 / glibc 2.28).
+    # This is the same container cibuildwheel uses, so the artefact we produce
+    # here is also the foundation for the planned Python wheel.
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64:latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # ---- Intel oneAPI MKL via yum -----------------------------------
+      - name: Add Intel oneAPI yum repo
+        run: |
+          tee /etc/yum.repos.d/oneAPI.repo > /dev/null <<'EOF'
+          [oneAPI]
+          name=Intel oneAPI repository
+          baseurl=https://yum.repos.intel.com/oneapi
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+          EOF
+
+      # CACHING NOTE: we use restore-only + explicit save (rather than the
+      # auto-save that `actions/cache@v4` does at job-end) so that a slow
+      # install is preserved even if a *later* step fails. Without this,
+      # a build-time failure means we re-pay the install cost every retry.
+      - name: Restore Intel oneAPI MKL cache
+        id: cache-mkl
+        uses: actions/cache/restore@v5
+        with:
+          path: /opt/intel/oneapi
+          key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
+
+      - name: Install Intel oneAPI MKL (yum)
+        if: steps.cache-mkl.outputs.cache-hit != 'true'
+        run: |
+          dnf install -y intel-oneapi-mkl-devel
+
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-mkl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /opt/intel/oneapi
+          key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
+
+      # ---- FFTW3 built from source, static, single precision, -fPIC ---
+      - name: Restore static FFTW3 cache
+        id: cache-fftw
+        uses: actions/cache/restore@v5
+        with:
+          path: /usr/local/fftw3
+          key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
+
+      - name: Build static FFTW3
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          cd /tmp
+          curl -fsSLO "https://www.fftw.org/fftw-${FFTW_VERSION}.tar.gz"
+          tar xf "fftw-${FFTW_VERSION}.tar.gz"
+          cd "fftw-${FFTW_VERSION}"
+          ./configure \
+            --prefix=/usr/local/fftw3 \
+            --enable-single \
+            --enable-static \
+            --disable-shared \
+            --enable-sse2 \
+            --enable-avx \
+            --enable-avx2 \
+            --enable-fma \
+            CFLAGS="-fPIC -O3"
+          make -j"$(nproc)"
+          make install
+
+      - name: Save static FFTW3 cache
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /usr/local/fftw3
+          key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
+
+      - name: Expose FFTW3 install to later steps
+        run: |
+          echo "CMAKE_PREFIX_PATH=/usr/local/fftw3" >> "$GITHUB_ENV"
+          # find_library needs the .a on its search path
+          echo "LIBRARY_PATH=/usr/local/fftw3/lib" >> "$GITHUB_ENV"
+          echo "CPATH=/usr/local/fftw3/include" >> "$GITHUB_ENV"
+
+      # ---- Source oneAPI env -----------------------------------------
+      - name: Source MKL environment
+        # We installed only intel-oneapi-mkl-devel — but yum drags in the
+        # intel-oneapi-compiler-shared-runtime as a dep, which makes the
+        # umbrella setvars.sh source compiler/env/vars.sh too. That script
+        # references OCL_ICD_FILENAMES unconditionally and aborts under
+        # `set -u`. Skip the umbrella entirely and source just MKL's vars.sh
+        # — that's all we actually need.
+        shell: bash
+        run: |
+          set -eo pipefail
+          source /opt/intel/oneapi/mkl/latest/env/vars.sh
+          {
+            echo "MKLROOT=${MKLROOT}"
+            echo "CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}:/usr/local/fftw3"
+            echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-}"
+            echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+            echo "LIBRARY_PATH=${LIBRARY_PATH:-}:/usr/local/fftw3/lib"
+            echo "CPATH=${CPATH:-}:/usr/local/fftw3/include"
+          } >> "$GITHUB_ENV"
+          echo "${PATH}" | tr ':' '\n' >> "$GITHUB_PATH"
+
+      # ---- Build tools (cmake + ninja via pip — manylinux doesn't ship
+      #      either at a recent-enough version by default) --------------
+      - name: Install CMake + Ninja
+        run: |
+          /opt/python/cp311-cp311/bin/pip install --upgrade 'cmake>=3.21' ninja
+          # Expose them on PATH for subsequent steps.
+          echo "/opt/python/cp311-cp311/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: cmake --preset linux-release
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel
+
+      - name: Test
+        run: ctest --preset linux-release
+
+      - name: Verify runtime dependencies of .so (should NOT link libfftw3f / libstdc++)
+        run: |
+          echo "--- ldd on libdigholo.so ---"
+          ldd build/linux-release/libdigholo.so* | tee ldd.out
+          # Any libstdc++ or libfftw3f dependency means we didn't actually
+          # achieve a portable build; fail the job so the regression is
+          # caught at CI time rather than by end users.
+          if grep -E 'libstdc\+\+|libfftw3f' ldd.out; then
+            echo "::error::portable-build regression: shared lib pulls in libstdc++ or libfftw3f"
+            exit 1
+          fi
+
+      - name: Stage release artefacts
+        run: |
+          mkdir -p artefacts/digholo-linux-x64/{lib,bin,include}
+          cp -P build/linux-release/libdigholo.so*  artefacts/digholo-linux-x64/lib/
+          cp    build/linux-release/digHolo         artefacts/digholo-linux-x64/bin/
+          cp    src/digHolo.h                       artefacts/digholo-linux-x64/include/
+          cp    README.md build.md                  artefacts/digholo-linux-x64/
+          ls -la artefacts/digholo-linux-x64/lib artefacts/digholo-linux-x64/bin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digholo-linux-x64
+          path: artefacts/digholo-linux-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  build-windows:
+    name: Windows x86_64 (MKL + FFTW3)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # NOTE: do NOT use ilammy/msvc-dev-cmd here — that action overrides
+      # VCPKG_ROOT with its own bundled vcpkg path, breaking the toolchain
+      # file lookup. The "Visual Studio 17 2022" CMake generator finds MSVC
+      # via vswhere and invokes MSBuild internally; cl.exe on PATH isn't
+      # needed.
+
+      # ---- vcpkg --------------------------------------------------------
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:VCPKG_ROOT") {
+            Remove-Item -Recurse -Force "$env:VCPKG_ROOT"
+          }
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      # vcpkg's default binary cache on Windows lives under %LOCALAPPDATA%.
+      # See note in the previous diff for the VCPKG_DEFAULT_BINARY_CACHE
+      # override we removed.
+      #
+      # CACHING NOTE (applies to all caches in this workflow): we use
+      # restore-only + explicit save (rather than auto-save at job-end)
+      # so a slow install is preserved even if a later step fails. Cold
+      # runs that fail at build/configure no longer re-pay the install
+      # cost on retry.
+      - name: Restore vcpkg binary cache
+        id: cache-vcpkg
+        uses: actions/cache/restore@v5
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-bincache-x64-windows-
+
+      # ---- Intel oneAPI MKL --------------------------------------------
+      - name: Restore Intel oneAPI MKL cache
+        id: cache-oneapi
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Download Intel oneAPI Base Toolkit installer
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "Downloading from $env:WINDOWS_BASEKIT_URL"
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -L --retry 3 --retry-delay 5 -o webimage.exe "$env:WINDOWS_BASEKIT_URL"
+          (Get-Item webimage.exe).Length / 1MB
+
+      - name: Install Intel oneAPI MKL (silent)
+        # Install pattern lifted from Intel's official oneapi-src/oneapi-ci
+        # (scripts/install_windows.bat). The NEED_VS*_INTEGRATION=0 flags
+        # skip the VS plug-in install — we only need MKL itself.
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          start /b /wait webimage.exe -s -x -f webimage_extracted --log extract.log
+          del webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install ^
+            --components=%WINDOWS_BASEKIT_COMPONENTS% ^
+            --eula=accept ^
+            -p=NEED_VS2017_INTEGRATION=0 ^
+            -p=NEED_VS2019_INTEGRATION=0 ^
+            -p=NEED_VS2022_INTEGRATION=0 ^
+            --log-dir=.
+          rmdir /s /q webimage_extracted
+
+      # Save the MKL install cache *now* — a build failure later in the
+      # job mustn't cause us to re-pay the 15-minute install on retry.
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Source oneAPI environment
+        shell: pwsh
+        # setvars.bat is a cmd script. Run it from cmd, dump the resulting env,
+        # then forward only the oneAPI-relevant vars (PATH goes to GITHUB_PATH,
+        # one entry per line; the rest go to GITHUB_ENV).
+        run: |
+          $forwarded = 'ONEAPI_ROOT|MKLROOT|CMPLR_ROOT|TBBROOT|CMAKE_PREFIX_PATH|INCLUDE|LIB|LIBPATH'
+          cmd.exe /c "call `"$env:ONEAPI_INSTALL_DIR\setvars.bat`" --force >nul && set" | ForEach-Object {
+            if ($_ -match "^($forwarded)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            }
+            elseif ($_ -match '^PATH=(.*)$') {
+              $matches[1].Split(';') | Where-Object { $_ -ne '' } |
+                Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+
+      # ---- Build --------------------------------------------------------
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-release
+
+      # vcpkg populates its binary cache during `vcpkg install` (which runs
+      # transitively from `cmake configure` via the toolchain file). Save it
+      # as soon as configure succeeds — a later build/test failure mustn't
+      # discard the work vcpkg just did.
+      - name: Save vcpkg binary cache
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-release --config Release
+
+      - name: Test
+        shell: pwsh
+        run: ctest --preset windows-release
+
+      # Diagnostic — only runs if Test failed. 0xc0000135 (STATUS_DLL_NOT_FOUND)
+      # doesn't say which DLL is missing. List what's actually next to the
+      # test exe, locate dumpbin.exe via vswhere, and dump dependencies for
+      # both binaries.
+      - name: Diagnose test failure (DLL deps)
+        if: failure()
+        shell: pwsh
+        run: |
+          $testdir = "build/windows-release/tests/Release"
+          Write-Host "--- Contents of $testdir ---"
+          if (Test-Path $testdir) {
+            Get-ChildItem $testdir | Format-Table Name, Length
+          } else {
+            Write-Host "(directory does not exist)"
+          }
+          Write-Host "--- Contents of build/windows-release/Release ---"
+          Get-ChildItem "build/windows-release/Release" -ErrorAction SilentlyContinue | Format-Table Name, Length
+
+          $vswhere = "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          $msvcVerDir = Get-ChildItem "$vsInstall\VC\Tools\MSVC" | Sort-Object Name -Desc | Select-Object -First 1
+          $dumpbin = "$($msvcVerDir.FullName)\bin\Hostx64\x64\dumpbin.exe"
+          Write-Host "--- dumpbin /dependents on test_smoke.exe ---"
+          if (Test-Path "$testdir/test_smoke.exe") {
+            & $dumpbin /dependents "$testdir/test_smoke.exe"
+          }
+          Write-Host "--- dumpbin /imports on test_smoke.exe (grep digholo) ---"
+          if (Test-Path "$testdir/test_smoke.exe") {
+            & $dumpbin /imports "$testdir/test_smoke.exe" | Select-String -Context 0,20 'digholo'
+          }
+          Write-Host "--- dumpbin /exports on digholo.dll (first 30) ---"
+          if (Test-Path "build/windows-release/Release/digholo.dll") {
+            & $dumpbin /exports "build/windows-release/Release/digholo.dll" | Select-Object -First 30
+          }
+
+      # ---- Artefacts ----------------------------------------------------
+      - name: Stage release artefacts
+        shell: pwsh
+        run: |
+          $stage = "artefacts/digholo-windows-x64"
+          New-Item -ItemType Directory -Force -Path "$stage/bin", "$stage/lib", "$stage/include" | Out-Null
+          Copy-Item build/windows-release/Release/digholo.dll "$stage/bin/"
+          Copy-Item build/windows-release/Release/digholo.lib "$stage/lib/"
+          Copy-Item build/windows-release/Release/digHolo.exe "$stage/bin/"
+          Copy-Item src/digHolo.h "$stage/include/"
+          Copy-Item README.md, build.md $stage
+          Get-ChildItem -Recurse $stage
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digholo-windows-x64
+          path: artefacts/digholo-windows-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  build-wheel-linux:
+    name: Wheel - Linux x86_64 (cibuildwheel)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    # Sequential after build-linux. The native job doesn't share an
+    # actions/cache with this one (cibuildwheel installs MKL + builds FFTW3
+    # inside its own container, separate from the host install) — but
+    # waiting until the native build is green gives faster feedback when
+    # the Linux build itself is broken (we don't burn 10 min of cibuildwheel
+    # time only to find out the C++ wouldn't compile).
+    needs: build-linux
+
+    # Note: this job runs on the HOST runner, NOT inside a container.
+    # cibuildwheel itself spawns the manylinux_2_28 container internally
+    # — its [tool.cibuildwheel.linux] block in pyproject.toml configures
+    # the image and the before-all install steps.
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.21.3
+
+      - name: Build wheel
+        # cibuildwheel mounts the package directory into the manylinux
+        # container as /project. We need the whole project (CMakeLists,
+        # src/, python/) visible there — so run from the repo root.
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          # Pure-ctypes wheel: build only one Python version, the resulting
+          # py3-none-manylinux_2_28_x86_64.whl works on every CPython 3.x.
+          # cibuildwheel will still smoke-test it via `test-command`.
+          CIBW_BUILD: "cp311-manylinux_x86_64"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digholo-wheel-linux
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  build-wheel-windows:
+    name: Wheel - Windows x86_64 (cibuildwheel)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    # Sequential after build-windows: that job populates the MKL cache (same
+    # key used here), so by the time this job starts, MKL install is a cache
+    # hit and we skip the 10-minute oneAPI installer. The wheel build no
+    # longer uses vcpkg (it builds FFTW3 from source instead — see comments
+    # in the FFTW3 build step) so the vcpkg cache is no longer shared.
+    needs: build-windows
+
+    env:
+      ONEAPI_INSTALL_DIR: C:\Program Files (x86)\Intel\oneAPI
+      FFTW3_INSTALL_DIR: ${{ github.workspace }}\fftw3-install
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # ---- Intel oneAPI MKL ---------------------------------------------
+      - name: Restore Intel oneAPI MKL cache
+        id: cache-oneapi
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Download Intel oneAPI Base Toolkit installer
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          curl.exe -L --retry 3 --retry-delay 5 -o webimage.exe "$env:WINDOWS_BASEKIT_URL"
+
+      - name: Install Intel oneAPI MKL (silent)
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          start /b /wait webimage.exe -s -x -f webimage_extracted --log extract.log
+          del webimage.exe
+          webimage_extracted\bootstrapper.exe -s --action install ^
+            --components=%WINDOWS_BASEKIT_COMPONENTS% ^
+            --eula=accept ^
+            -p=NEED_VS2017_INTEGRATION=0 ^
+            -p=NEED_VS2019_INTEGRATION=0 ^
+            -p=NEED_VS2022_INTEGRATION=0 ^
+            --log-dir=.
+          rmdir /s /q webimage_extracted
+
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
+      - name: Source oneAPI environment
+        shell: pwsh
+        run: |
+          $forwarded = 'ONEAPI_ROOT|MKLROOT|CMPLR_ROOT|TBBROOT|CMAKE_PREFIX_PATH|INCLUDE|LIB|LIBPATH'
+          cmd.exe /c "call `"$env:ONEAPI_INSTALL_DIR\setvars.bat`" --force >nul && set" | ForEach-Object {
+            if ($_ -match "^($forwarded)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            }
+            elseif ($_ -match '^PATH=(.*)$') {
+              $matches[1].Split(';') | Where-Object { $_ -ne '' } |
+                Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            }
+          }
+
+      # ---- FFTW3 from source --------------------------------------------
+      # We build FFTW3 from source rather than pulling vcpkg's port. Reasons:
+      #   * vcpkg's fftw3 with x64-windows-static-md was producing a fftw3f.dll
+      #     dependency in our resulting digholo.dll (CMake found something
+      #     dynamic somewhere in the search path despite the static triplet).
+      #     Couldn't see what cmake was doing because scikit-build-core hides
+      #     STATUS messages from cibuildwheel's pip-wheel subprocess.
+      #   * Source build is identical to the Linux wheel approach — same
+      #     pinned FFTW_VERSION, same enabled features, deterministic.
+      #   * No vcpkg manifest required for the wheel build.
+      - name: Restore static FFTW3 cache
+        id: cache-fftw
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.FFTW3_INSTALL_DIR }}
+          key: fftw3-${{ env.FFTW_VERSION }}-windows-static-single-avx2
+
+      - name: Build static FFTW3 (Windows)
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tmpdir = "${env:TEMP}\fftw-build"
+          New-Item -ItemType Directory -Force -Path $tmpdir | Out-Null
+          Set-Location $tmpdir
+          $url = "https://www.fftw.org/fftw-${env:FFTW_VERSION}.tar.gz"
+          curl.exe -fsSLO $url
+          tar xf "fftw-${env:FFTW_VERSION}.tar.gz"
+          Set-Location "fftw-${env:FFTW_VERSION}"
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_INSTALL_PREFIX="${env:FFTW3_INSTALL_DIR}" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DBUILD_TESTS=OFF `
+            -DENABLE_FLOAT=ON `
+            -DENABLE_SSE2=ON `
+            -DENABLE_AVX=ON `
+            -DENABLE_AVX2=ON
+          cmake --build build --config Release --parallel
+          cmake --install build --config Release
+
+      - name: Save static FFTW3 cache
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.FFTW3_INSTALL_DIR }}
+          key: fftw3-${{ env.FFTW_VERSION }}-windows-static-single-avx2
+
+      # ---- Python + cibuildwheel ----------------------------------------
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install cibuildwheel + delvewheel
+        # delvewheel is the wheel-repair tool we configured cibuildwheel
+        # to invoke (in pyproject.toml's [tool.cibuildwheel.windows]).
+        # cibuildwheel doesn't auto-install repair tools — the user is
+        # expected to provide them on PATH.
+        run: python -m pip install cibuildwheel==2.21.3 delvewheel
+
+      - name: Build wheel
+        # cibuildwheel's pip-wheel invokes scikit-build-core which invokes
+        # CMake. We forward the FFTW3 install dir + MKL paths so CMake's
+        # find_package picks them up. FFTW3 is listed first in
+        # CMAKE_PREFIX_PATH so its config is found before MKL's lib dir
+        # (which contains a fftw3f.lib that's a stub for MKL's
+        # FFTW-compatible interface — wrong thing).
+        # Also enable scikit-build-core's verbose CMake output so the next
+        # CI iteration can see what find_package actually picks.
+        shell: pwsh
+        run: |
+          $fftw3Dir    = "$env:FFTW3_INSTALL_DIR" -replace '\\', '/'
+          $mklRoot     = "$env:MKLROOT"           -replace '\\', '/'
+          $cmakePrefix = "$env:CMAKE_PREFIX_PATH" -replace '\\', '/'
+          # FFTW3 install dir first on CMAKE_PREFIX_PATH so find_package
+          # resolves to it before the MKL-bundled fftw3f.lib stub.
+          $env:CIBW_ENVIRONMENT_WINDOWS = "MKLROOT='$mklRoot' CMAKE_PREFIX_PATH='$fftw3Dir;$cmakePrefix'"
+          python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BUILD: "cp311-win_amd64"
+          # Make scikit-build-core surface CMake's STATUS messages so the
+          # FFTW3 picks (and our hard-fail check on MKL FFTW stubs) are
+          # visible in the cibuildwheel log.
+          CIBW_BUILD_VERBOSITY: "1"
+
+      # Test the wheel in a separate step (cibuildwheel's built-in test
+      # invocation is disabled in pyproject.toml's [tool.cibuildwheel.windows]
+      # so the wheel is always saved, regardless of test outcome). This makes
+      # iteration on Windows-side bugs much faster — no rebuild needed to
+      # inspect a failing wheel.
+      - name: Test wheel
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem wheelhouse/*.whl | Select-Object -First 1
+          python -m pip install "$($whl.FullName)[test]"
+          python -m pytest python/tests -v
+
+      # Diagnostic — only runs if the test step failed. Unzip the wheel and
+      # dump digholo.dll's dependencies + the package dir contents, so we
+      # can see whether delvewheel bundled all the right DLLs and what
+      # transitive deps the loader is failing to resolve.
+      - name: Diagnose wheel test failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $whl = Get-ChildItem wheelhouse/*.whl -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $whl) { Write-Host "(no wheel produced)"; exit 0 }
+          Write-Host "--- $($whl.Name) ($([math]::Round($whl.Length/1024, 1)) KB) ---"
+          $extractDir = "wheelhouse/_extracted"
+          Expand-Archive -Force -Path $whl.FullName -DestinationPath $extractDir
+          Get-ChildItem -Recurse $extractDir | Format-Table Mode, Length, FullName -AutoSize
+
+          $vswhere = "${Env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          $msvcVerDir = Get-ChildItem "$vsInstall\VC\Tools\MSVC" | Sort-Object Name -Desc | Select-Object -First 1
+          $dumpbin = "$($msvcVerDir.FullName)\bin\Hostx64\x64\dumpbin.exe"
+          $dll = Get-ChildItem -Recurse "$extractDir/digholo*.dll" | Select-Object -First 1
+          if ($dll) {
+            Write-Host "--- dumpbin /dependents on $($dll.FullName) ---"
+            & $dumpbin /dependents $dll.FullName
+          }
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: digholo-wheel-windows
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows, build-wheel-linux, build-wheel-windows]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist/
+
+      - name: Package per-platform tarballs / zips
+        run: |
+          set -e
+          cd dist
+          ls -la
+          tar -czf ../digholo-linux-x64.tar.gz   -C digholo-linux-x64   .
+          (cd digholo-windows-x64 && zip -r ../../digholo-windows-x64.zip .)
+          # Wheels are uploaded as-is.
+          cp digholo-wheel-linux/*.whl   ../
+          cp digholo-wheel-windows/*.whl ../
+          ls -la ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            digholo-linux-x64.tar.gz
+            digholo-windows-x64.zip
+            *.whl

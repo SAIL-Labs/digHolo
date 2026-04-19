@@ -1,0 +1,79 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "DIGHOLO_BUILD_SHARED": "ON",
+        "DIGHOLO_BUILD_CLI":    "ON",
+        "DIGHOLO_BUILD_TESTING":"ON"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Release (Ninja, fully static deps)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "MKL_LINK": "static",
+        "MKL_THREADING": "sequential",
+        "DIGHOLO_PREFER_STATIC_DEPS": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux Debug (Ninja)",
+      "inherits": "linux-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows Release (VS 2022, vcpkg)",
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "MKL_LINK": "static",
+        "MKL_THREADING": "sequential"
+      }
+    },
+    {
+      "name": "windows-ninja",
+      "displayName": "Windows Release (Ninja, vcpkg)",
+      "inherits": "windows-release",
+      "generator": "Ninja"
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "linux-release",   "configurePreset": "linux-release" },
+    { "name": "linux-debug",     "configurePreset": "linux-debug" },
+    { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" },
+    { "name": "windows-ninja",   "configurePreset": "windows-ninja" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

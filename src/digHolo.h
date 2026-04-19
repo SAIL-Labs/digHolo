@@ -27,8 +27,8 @@
  * @section pageBackground_1 off-axis digital holography
  * Off-axis digital holography is a technique for measuring the spatial amplitude and phase of an unknown field (S) by interfering the field with a known plane-wave reference field (R) travelling at an angle offset (off-axis) relative to the unknown field (S). The intensity of the interference pattern between the two beams, S and R, is recorded on a camera and then processed to recover the unknown field S. The process is similar to traditional off-axis holography, except the interference pattern is recorded on a digital camera (rather than film), and the operations of diffraction and spatial filtering are performed numerically rather than physically.
  * It is a relatively straightforward procedure, whereby an interference pattern is Fourier transformed, a single term/area is selected in Fourier space, rejecting all else, and then inverse Fourier transformed to recover the desired Signal field, S.
- * The figure below illustrates the procedure by which the interference pattern is measured and processed. Our unknown Signal field (S) and our off-axis Reference field (R) interfere on a camera, which records the intensity of the interference pattern of the Signal and Reference, |S+R|². The Signal and Reference fields must be mutually coherent on the timescale of the exposure time of the camera. That is, the relative phase between the Signal and Reference must be fixed and stable while the camera frame is being captured, otherwise the fringes on the interference pattern |S+R|² will blur out and it will not be possible to reconstruct the Signal. That is, we can not reconstruct the phase of the Signal relative to the Reference, if indeed there is no phase relationship between the Signal and Reference as far as the captured camera frame is concerned.
- * The interference pattern |S+R|² can be expanded and rewritten as the summation of four terms, |S|²+|R|²+SR*+R*S. If we take the Fourier transform (FT) of the interference pattern, we end up with a summation of the Fourier transform of each of those four terms FT{|S|²}+FT{|R|²}+FT{SR*}+FT{R*S}, which in the figure is illustrated to the right of the camera.  The Fourier transform of the intensity of the Reference FT{|R|²} and the Fourier transform of the intensity of the Signal, FT{|S|²}, are autocorrelation terms that show up on-axis in Fourier-space indicated in the red circle. These do not contain any information about the relative phase between the Signal and Reference and are not of use. The off-axis terms indicated in green and blue are where the useful information lies. Indicated in green is the term FT{SR*}, which is the convolution of the Fourier transform of S and the Fourier transform of R. As the Reference is a plane-wave, it’s Fourier transform is a single point in Fourier-space at the position corresponding to theta_x. A convolution of a function with a delta, is simply the function offset to the position of the delta (sifting property). That is, the term FT{SR*} is just FT{S} where S has been offset in Fourier space by the angle of the Reference field. Hence if we select this term, and then inverse Fourier transform back into the plane of the camera, and then remove the angle offset of the Reference wave, we get the reconstructed Signal field. The angle offset of the Reference wave can be removed either by shifting the FT{SR*} term to the centre of Fourier space before applying the inverse Fourier transform, or equivalently, by multiplying the reconstructed field by R* after the inverse Fourier transform.
+ * The figure below illustrates the procedure by which the interference pattern is measured and processed. Our unknown Signal field (S) and our off-axis Reference field (R) interfere on a camera, which records the intensity of the interference pattern of the Signal and Reference, |S+R|ï¿½. The Signal and Reference fields must be mutually coherent on the timescale of the exposure time of the camera. That is, the relative phase between the Signal and Reference must be fixed and stable while the camera frame is being captured, otherwise the fringes on the interference pattern |S+R|ï¿½ will blur out and it will not be possible to reconstruct the Signal. That is, we can not reconstruct the phase of the Signal relative to the Reference, if indeed there is no phase relationship between the Signal and Reference as far as the captured camera frame is concerned.
+ * The interference pattern |S+R|ï¿½ can be expanded and rewritten as the summation of four terms, |S|ï¿½+|R|ï¿½+SR*+R*S. If we take the Fourier transform (FT) of the interference pattern, we end up with a summation of the Fourier transform of each of those four terms FT{|S|ï¿½}+FT{|R|ï¿½}+FT{SR*}+FT{R*S}, which in the figure is illustrated to the right of the camera.  The Fourier transform of the intensity of the Reference FT{|R|ï¿½} and the Fourier transform of the intensity of the Signal, FT{|S|ï¿½}, are autocorrelation terms that show up on-axis in Fourier-space indicated in the red circle. These do not contain any information about the relative phase between the Signal and Reference and are not of use. The off-axis terms indicated in green and blue are where the useful information lies. Indicated in green is the term FT{SR*}, which is the convolution of the Fourier transform of S and the Fourier transform of R. As the Reference is a plane-wave, itï¿½s Fourier transform is a single point in Fourier-space at the position corresponding to theta_x. A convolution of a function with a delta, is simply the function offset to the position of the delta (sifting property). That is, the term FT{SR*} is just FT{S} where S has been offset in Fourier space by the angle of the Reference field. Hence if we select this term, and then inverse Fourier transform back into the plane of the camera, and then remove the angle offset of the Reference wave, we get the reconstructed Signal field. The angle offset of the Reference wave can be removed either by shifting the FT{SR*} term to the centre of Fourier space before applying the inverse Fourier transform, or equivalently, by multiplying the reconstructed field by R* after the inverse Fourier transform.
  * <p>How do you choose the angle of the Reference Field?<p>
  * The incident angle must be sufficiently large that the autocorrelation terms and the cross-correlation terms can be separated in Fourier space, but not so large that cross-correlation terms do not fit in the resolvable Fourier space. That is, there must be no features of the interference pattern that change on a scale smaller than a single pixel of the camera.
 
@@ -145,14 +145,65 @@
 //#define NATIVE_TYPE_ONLY
 
   //Defines that handle how functions are exported to the shared object/DLL bases on C++ vs. C and Windows vs. Unix compilation
+//
+// EXT_C is prepended to every public API function and must:
+//   * force C linkage so dlsym / GetProcAddress / ctypes can find the bare
+//     ASCII names (no C++ mangling),
+//   * mark the symbol as exported on Windows when compiling the library,
+//     AND imported on Windows when compiling a consumer (test, user exe,
+//     Python ctypes host).
+//
+// The consumer/producer distinction is gated on DIGHOLO_BUILDING, which the
+// library's CMakeLists.txt defines for the `digholo` shared target and the
+// `digholo-cli` executable. Everyone else â€” test_smoke, external users
+// consuming digholo.dll, user code #include'ing this header â€” sees
+// __declspec(dllimport) and generates proper cross-DLL imports.
+//
+// Historical note: the original header unconditionally used dllexport for
+// every consumer, which caused MSVC to silently drop the digholo.dll
+// dependency from test exes (they "exported" the same symbols, so the
+// linker decided they didn't need to import them). On Linux the original
+// macro was empty â€” no extern "C" â€” which left symbols C++-mangled and
+// broke ctypes. Both are fixed here.
+// Three Windows build modes, distinguished by which preprocessor macro the
+// build system defines:
+//
+//   DIGHOLO_STATIC_BUILD  â€” compiling the source directly into an .exe or
+//                           static .lib that doesn't expose a DLL surface
+//                           at all (e.g. the digHolo CLI). Plain extern "C",
+//                           no DLL decoration. Without this, MSVC creates
+//                           an .lib next to the .exe whose name collides
+//                           with the shared library's import lib on
+//                           case-insensitive Windows filesystems.
+//   DIGHOLO_BUILDING      â€” compiling the digholo SHARED library itself.
+//                           Use dllexport so symbols land in the import lib.
+//   (neither)             â€” compiling a consumer of digholo.dll. Use
+//                           dllimport so the consumer generates proper
+//                           import-table entries against digholo.dll.
 #ifdef __cplusplus
-#ifdef _WIN32
-#define EXT_C extern "C" __declspec (dllexport) 
+#  ifdef _WIN32
+#    if defined(DIGHOLO_STATIC_BUILD)
+#      define EXT_C extern "C"
+#    elif defined(DIGHOLO_BUILDING)
+#      define EXT_C extern "C" __declspec(dllexport)
+#    else
+#      define EXT_C extern "C" __declspec(dllimport)
+#    endif
+#  else
+#    define EXT_C extern "C"
+#  endif
 #else
-#define EXT_C
-#endif
-#else
-#define EXT_C
+#  ifdef _WIN32
+#    if defined(DIGHOLO_STATIC_BUILD)
+#      define EXT_C
+#    elif defined(DIGHOLO_BUILDING)
+#      define EXT_C __declspec(dllexport)
+#    else
+#      define EXT_C __declspec(dllimport)
+#    endif
+#  else
+#    define EXT_C
+#  endif
 #endif
 
 //The complex datatype, for compatibility with other libraries and headers, it's called 'complex64', rather than 'complex' etc., 
