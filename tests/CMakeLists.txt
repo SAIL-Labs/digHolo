@@ -10,8 +10,14 @@ set_target_properties(test_smoke PROPERTIES CXX_STANDARD 11)
 # so the test exe and digholo.dll end up in different directories. Copy any
 # runtime DLLs next to the test exe so the loader finds them. No-op on Linux
 # (build-tree rpath handles it).
+#
+# CMake's $<TARGET_RUNTIME_DLLS:test_smoke> only lists DLLs that come from
+# IMPORTED targets — first-party in-tree shared libraries are excluded. So
+# we copy $<TARGET_FILE:digholo> explicitly in addition to the imported set.
 if(WIN32)
     add_custom_command(TARGET test_smoke POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:digholo> $<TARGET_FILE_DIR:test_smoke>
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_RUNTIME_DLLS:test_smoke> $<TARGET_FILE_DIR:test_smoke>
         COMMAND_EXPAND_LISTS

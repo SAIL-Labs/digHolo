@@ -57,9 +57,13 @@ jobs:
           gpgkey=https://yum.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
           EOF
 
-      - name: Cache Intel oneAPI MKL install
+      # CACHING NOTE: we use restore-only + explicit save (rather than the
+      # auto-save that `actions/cache@v4` does at job-end) so that a slow
+      # install is preserved even if a *later* step fails. Without this,
+      # a build-time failure means we re-pay the install cost every retry.
+      - name: Restore Intel oneAPI MKL cache
         id: cache-mkl
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: /opt/intel/oneapi
           key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
@@ -69,10 +73,17 @@ jobs:
         run: |
           dnf install -y intel-oneapi-mkl-devel
 
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-mkl.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/intel/oneapi
+          key: oneapi-mkl-${{ env.ONEAPI_VERSION_LINUX }}-manylinux_2_28-x86_64
+
       # ---- FFTW3 built from source, static, single precision, -fPIC ---
-      - name: Cache static FFTW3 install
+      - name: Restore static FFTW3 cache
         id: cache-fftw
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: /usr/local/fftw3
           key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
@@ -97,6 +108,13 @@ jobs:
             CFLAGS="-fPIC -O3"
           make -j"$(nproc)"
           make install
+
+      - name: Save static FFTW3 cache
+        if: steps.cache-fftw.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /usr/local/fftw3
+          key: fftw3-${{ env.FFTW_VERSION }}-manylinux_2_28-static-single-fPIC-avx2
 
       - name: Expose FFTW3 install to later steps
         run: |
@@ -201,16 +219,18 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
 
-      # vcpkg's default binary cache on Windows lives under %LOCALAPPDATA%
-      # (typically C:\Users\runneradmin\AppData\Local\vcpkg\archives). We
-      # used to override it with VCPKG_DEFAULT_BINARY_CACHE pointing at the
-      # workspace, but vcpkg complained "Environment variable
-      # VCPKG_DEFAULT_BINARY_CACHE must be a directory" even when the dir
-      # existed (Windows path interpretation quirk inside vcpkg's
-      # binary-source parser). Letting vcpkg pick the default location and
-      # caching THAT works reliably.
-      - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+      # vcpkg's default binary cache on Windows lives under %LOCALAPPDATA%.
+      # See note in the previous diff for the VCPKG_DEFAULT_BINARY_CACHE
+      # override we removed.
+      #
+      # CACHING NOTE (applies to all caches in this workflow): we use
+      # restore-only + explicit save (rather than auto-save at job-end)
+      # so a slow install is preserved even if a later step fails. Cold
+      # runs that fail at build/configure no longer re-pay the install
+      # cost on retry.
+      - name: Restore vcpkg binary cache
+        id: cache-vcpkg
+        uses: actions/cache/restore@v4
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
@@ -218,9 +238,9 @@ jobs:
             vcpkg-bincache-x64-windows-
 
       # ---- Intel oneAPI MKL --------------------------------------------
-      - name: Cache Intel oneAPI MKL install
+      - name: Restore Intel oneAPI MKL cache
         id: cache-oneapi
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
@@ -252,6 +272,15 @@ jobs:
             --log-dir=.
           rmdir /s /q webimage_extracted
 
+      # Save the MKL install cache *now* — a build failure later in the
+      # job mustn't cause us to re-pay the 15-minute install on retry.
+      - name: Save Intel oneAPI MKL cache
+        if: steps.cache-oneapi.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.ONEAPI_INSTALL_DIR }}
+          key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
+
       - name: Source oneAPI environment
         shell: pwsh
         # setvars.bat is a cmd script. Run it from cmd, dump the resulting env,
@@ -273,6 +302,17 @@ jobs:
       - name: Configure
         shell: pwsh
         run: cmake --preset windows-release
+
+      # vcpkg populates its binary cache during `vcpkg install` (which runs
+      # transitively from `cmake configure` via the toolchain file). Save it
+      # as soon as configure succeeds — a later build/test failure mustn't
+      # discard the work vcpkg just did.
+      - name: Save vcpkg binary cache
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
 
       - name: Build
         shell: pwsh
@@ -380,21 +420,27 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
 
-      - name: Cache vcpkg binary cache
-        uses: actions/cache@v4
+      # The native build-windows job is the cache producer (it has explicit
+      # save steps). This wheel job is consumer-only; restore-only with no
+      # save means we won't accidentally overwrite a good cache with a stale
+      # one if a wheel-side regression sneaks through.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@v4
         with:
           path: ~\AppData\Local\vcpkg\archives
           key: vcpkg-bincache-x64-windows-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-bincache-x64-windows-
 
-      - name: Cache Intel oneAPI MKL install
+      - name: Restore Intel oneAPI MKL cache
         id: cache-oneapi
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.ONEAPI_INSTALL_DIR }}
           key: oneapi-mkl-${{ env.WINDOWS_BASEKIT_URL }}
 
+      # The native job ran first and populated the cache; these install
+      # steps are fall-throughs in case the cache somehow missed.
       - name: Download Intel oneAPI Base Toolkit installer
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: pwsh
