@@ -35,7 +35,7 @@
 #include <vector>
 #include <thread>//std::thread
 #include <float.h>//FLT_MAX
-#include <immintrin.h>//SIMD AVX intrisics
+#include "digholo_simd_compat.h"//SIMD AVX intrinsics (simde on arm64, immintrin.h on x86)
 
 //When linking statically with FFTW3, you'll have to comment out the line #define FFTW_DLL
 //If you're dynamically linking, you'll have to make sure #define FFTW_DLL
