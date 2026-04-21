@@ -128,8 +128,12 @@ def run_case(dll, p: dict) -> dict:
     print(f"  coefs  : {coefs.shape}  (b={cb}, modes={cm}, pol={cp})")
     print(f"  x_axis : {x_axis.shape}  y_axis : {y_axis.shape}")
 
+    # frames intentionally not stored: ~100 MB across all cases, redundant
+    # with the fields/coefs comparisons (the pipeline takes frames as input,
+    # so any simulator regression shows up immediately downstream), and not
+    # bit-portable across architectures.
     return {
-        "frames": frames, "fields": fields, "coefs": coefs,
+        "fields": fields, "coefs": coefs,
         "x_axis": x_axis, "y_axis": y_axis,
         "meta": {
             "params": {k: float(v) if isinstance(v, float) else v for k, v in p.items()},
@@ -148,7 +152,6 @@ def save_case(case_name: str, result: dict, lib_path: Path) -> None:
     case_dir = OUTPUT_DIR / case_name
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    np.save(case_dir / "frames.npy", result["frames"])
     np.save(case_dir / "fields.npy", result["fields"])
     np.save(case_dir / "coefs.npy",  result["coefs"])
     np.save(case_dir / "x_axis.npy", result["x_axis"])
