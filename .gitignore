@@ -47,6 +47,8 @@ Thumbs.db
 # --- Claude Code / superpowers (local only, not for upstream) ---
 .claude/
 docs/superpowers/
+CLAUDE.md
+**/CLAUDE.md
 
 # --- Python (for the future python/ package) ---
 __pycache__/

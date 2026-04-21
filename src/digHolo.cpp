@@ -10256,7 +10256,12 @@ public: int SetWavelengthArbitrary(float* wavelengths, int lambdaCount)
 		   {
 			   //Just hard coded as 2, won't bother reallocating if the polCount changes.
 			   const size_t polCount = DIGHOLO_POLCOUNTMAX;// digHoloPolCount;
-			   const size_t parameterCount = 6;
+			   //7 sub-arrays carved out below (TiltX, TiltY, TiltXoffset,
+			   //TiltYoffset, Defocus, CentreX, CentreY). Was previously 6,
+			   //which left CentreY_Valid pointing one element past the buffer
+			   //— a write past the end that x86 heap padding absorbed but
+			   //macOS arm64 allocator detects as corruption.
+			   const size_t parameterCount = 7;
 			   //Just allocate it as 1 array an dereference
 			   allocate1D(parameterCount*polCount, digHoloRefTiltX_Valid);
 
