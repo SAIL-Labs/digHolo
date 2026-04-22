@@ -29,3 +29,8 @@ set_tests_properties(smoke PROPERTIES
     LABELS "smoke"
     TIMEOUT 60
 )
+
+# Numerical regression — driven from Python via tests/validate_references.py
+# against the .npy reference set under tests/reference_data/. CI runs it as a
+# separate step rather than through CTest, since it needs numpy at runtime
+# and the build env doesn't always have it.

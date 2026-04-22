@@ -43,19 +43,30 @@ option(DIGHOLO_FFTW_DLL            "Define FFTW_DLL (use only for shared FFTW3)"
 option(DIGHOLO_PREFER_STATIC_DEPS  "Prefer static FFTW3 + libstdc++/libgcc"       OFF)
 
 # ---------------------------------------------------------------------------
-# Architecture requirements (digHolo hard-requires AVX2 + FMA3 — x86-64 only)
+# Architecture requirements
+#
+# digHolo's SIMD core was originally written against x86-64 AVX2 + FMA3. On
+# Apple Silicon we route the same intrinsics through simde → NEON, so arm64
+# is also accepted on Apple hosts. Other architectures (arm64 Linux, other
+# POSIX) are still unsupported.
 # ---------------------------------------------------------------------------
-if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|x64)")
-    message(FATAL_ERROR
-        "digHolo requires an x86-64 CPU with AVX2 + FMA3. "
-        "Detected processor: '${CMAKE_SYSTEM_PROCESSOR}'.")
+set(DIGHOLO_IS_APPLE_SILICON OFF)
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64|aarch64)")
+    set(DIGHOLO_IS_APPLE_SILICON ON)
 endif()
 
-if(APPLE)
+if(NOT (CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|AMD64|x64)" OR DIGHOLO_IS_APPLE_SILICON))
     message(FATAL_ERROR
-        "macOS is not a supported build target — digHolo's SIMD paths require "
-        "AVX2 + FMA3 (no Apple Silicon support) and Intel MKL is not "
-        "redistributed for macOS in modern oneAPI releases.")
+        "digHolo supports x86-64 with AVX2 + FMA3 (Linux, Windows) or "
+        "Apple Silicon (arm64 macOS, via simde + Accelerate). "
+        "Detected system: ${CMAKE_SYSTEM_NAME} / ${CMAKE_SYSTEM_PROCESSOR}.")
+endif()
+
+if(APPLE AND NOT DIGHOLO_IS_APPLE_SILICON)
+    message(FATAL_ERROR
+        "x86_64 macOS is not supported — Intel MKL is not redistributed for "
+        "macOS in modern oneAPI releases. Build on arm64 macOS (simde + "
+        "Accelerate) or on Linux/Windows (MKL).")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -157,14 +168,61 @@ if(DIGHOLO_PREFER_STATIC_DEPS)
 endif()
 
 # ---------------------------------------------------------------------------
-# Dependency: Intel MKL (BLAS + LAPACK)
-# Requires Intel oneAPI installed; setvars.sh / setvars.bat sourced.
+# Dependency: BLAS + LAPACK
+#
+# x86-64 (Linux, Windows): Intel MKL via oneAPI. Requires setvars.{sh,bat}
+# sourced so the CMake config is on CMAKE_PREFIX_PATH.
+#
+# Apple Silicon: the Accelerate framework, using the modern LAPACK interface
+# introduced in macOS 13.3 (ACCELERATE_NEW_LAPACK, LP64 int-sized).
 # ---------------------------------------------------------------------------
-set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
-set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
-set(MKL_LINK        "static"     CACHE STRING "MKL link mode (static/dynamic)")
+if(DIGHOLO_IS_APPLE_SILICON)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    message(STATUS "digHolo: using Apple Accelerate framework = ${ACCELERATE_FRAMEWORK}")
 
-find_package(MKL CONFIG REQUIRED)
+    # Homebrew's FFTW3 splits the threads API into a separate dylib
+    # (libfftw3f_threads.dylib), whereas the Linux CI build compiles FFTW3
+    # without --enable-threads and bundles no-op thread stubs into the main
+    # libfftw3f. digHolo.cpp calls fftwf_init_threads / fftwf_plan_with_nthreads
+    # unconditionally, so we need the separate threads lib on macOS.
+    find_library(FFTW3F_THREADS_LIBRARY NAMES fftw3f_threads libfftw3f_threads
+                 HINTS ${FFTW3F_INCLUDE_DIR}/../lib /opt/homebrew/lib /usr/local/lib)
+    if(NOT FFTW3F_THREADS_LIBRARY)
+        message(FATAL_ERROR
+            "libfftw3f_threads not found. On macOS install via Homebrew: "
+            "`brew install fftw` (ships libfftw3f_threads.dylib).")
+    endif()
+    message(STATUS "digHolo: FFTW3f threads lib = ${FFTW3F_THREADS_LIBRARY}")
+else()
+    set(MKL_INTERFACE   "lp64"       CACHE STRING "MKL integer interface")
+    set(MKL_THREADING   "sequential" CACHE STRING "MKL threading layer")
+    set(MKL_LINK        "static"     CACHE STRING "MKL link mode (static/dynamic)")
+
+    find_package(MKL CONFIG REQUIRED)
+endif()
+
+# ---------------------------------------------------------------------------
+# Dependency: simde (Apple Silicon only — translates x86 AVX2/FMA3 intrinsics
+# to NEON at compile time). Pulled via FetchContent and pinned; the tag
+# is baked in so builds are reproducible across machines.
+# ---------------------------------------------------------------------------
+if(DIGHOLO_IS_APPLE_SILICON)
+    include(FetchContent)
+    FetchContent_Declare(
+        simde
+        GIT_REPOSITORY https://github.com/simd-everywhere/simde.git
+        GIT_TAG        v0.8.2
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(simde)
+
+    # simde is header-only; expose its include dir as an INTERFACE target.
+    add_library(digholo_simde INTERFACE)
+    target_include_directories(digholo_simde INTERFACE
+        "${simde_SOURCE_DIR}"
+    )
+    message(STATUS "digHolo: simde headers = ${simde_SOURCE_DIR}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Sources
@@ -190,18 +248,44 @@ function(_digholo_apply_compile_settings target)
             /D_CRT_SECURE_NO_WARNINGS
         )
     else()
-        target_compile_options(${target} PRIVATE
-            -mavx2 -mfma
-            $<$<CONFIG:Release>:-O3>
-        )
+        if(DIGHOLO_IS_APPLE_SILICON)
+            # simde handles intrinsic translation — no -mavx2/-mfma needed.
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-O3>
+            )
+        else()
+            target_compile_options(${target} PRIVATE
+                -mavx2 -mfma
+                $<$<CONFIG:Release>:-O3>
+            )
+        endif()
     endif()
 
     if(DIGHOLO_FFTW_DLL)
         target_compile_definitions(${target} PRIVATE FFTW_DLL)
     endif()
 
-    # Link FFTW3 *first*, then MKL — order matters (see README).
-    target_link_libraries(${target} PRIVATE ${_DIGHOLO_FFTW_TARGET} MKL::MKL)
+    # Link FFTW3 *first*, then the BLAS/LAPACK backend — order matters for
+    # the MKL path (MKL also ships an FFTW-compatible interface that lacks
+    # the real-to-real DCTs digHolo needs; FFTW must win the symbol race).
+    if(DIGHOLO_IS_APPLE_SILICON)
+        target_link_libraries(${target} PRIVATE
+            ${_DIGHOLO_FFTW_TARGET}
+            ${FFTW3F_THREADS_LIBRARY}
+            ${ACCELERATE_FRAMEWORK}
+            digholo_simde
+        )
+        target_compile_definitions(${target} PRIVATE
+            DIGHOLO_USE_ACCELERATE
+            ACCELERATE_NEW_LAPACK
+            DIGHOLO_USE_SIMDE
+        )
+    else()
+        target_link_libraries(${target} PRIVATE
+            ${_DIGHOLO_FFTW_TARGET}
+            MKL::MKL
+        )
+    endif()
 
     if(UNIX AND NOT APPLE)
         target_link_libraries(${target} PRIVATE pthread m dl)
@@ -340,5 +424,9 @@ message(STATUS "  CLI executable         : ${DIGHOLO_BUILD_CLI}")
 message(STATUS "  Smoke tests            : ${DIGHOLO_BUILD_TESTING}")
 message(STATUS "  Install targets        : ${DIGHOLO_INSTALL}")
 message(STATUS "  FFTW3f target          : ${_DIGHOLO_FFTW_TARGET}")
-message(STATUS "  MKL link / threading   : ${MKL_LINK} / ${MKL_THREADING}")
+if(DIGHOLO_IS_APPLE_SILICON)
+    message(STATUS "  BLAS/LAPACK backend    : Apple Accelerate")
+else()
+    message(STATUS "  MKL link / threading   : ${MKL_LINK} / ${MKL_THREADING}")
+endif()
 message(STATUS "")

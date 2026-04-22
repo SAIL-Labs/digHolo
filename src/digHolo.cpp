@@ -35,7 +35,7 @@
 #include <vector>
 #include <thread>//std::thread
 #include <float.h>//FLT_MAX
-#include <immintrin.h>//SIMD AVX intrisics
+#include "digholo_simd_compat.h"//SIMD AVX intrinsics (simde on arm64, immintrin.h on x86)
 
 //When linking statically with FFTW3, you'll have to comment out the line #define FFTW_DLL
 //If you're dynamically linking, you'll have to make sure #define FFTW_DLL
@@ -45,41 +45,68 @@
 //Real-to-real transforms are used during the 'AutoAlign' routine.
 #include <fftw3.h>
 
-#ifdef LAPACKBLAS_ENABLE	
-#ifdef MKL_ENABLE
-	//Intel MKL library
-	//Console 'MKL Link link advisor' for assistance selecting the correct .libs
-	//https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl/link-line-advisor.html
-	//e.g. static linked :  mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
-		//or if you're having issues with libiomp5md.lib (openMP threads), link with the sequential version
-		//mkl_intel_lp64.lib;mkl_sequential.lib;mkl_core.lib
-	//e.g. dynamic linked :  mkl_rt.lib
+#ifdef LAPACKBLAS_ENABLE
+#if defined(DIGHOLO_USE_ACCELERATE)
+    // Apple Silicon path — Accelerate framework, modern LAPACK interface.
+    // ACCELERATE_NEW_LAPACK is defined at the compiler command line by CMake.
+    // Accelerate exposes standard LAPACK / CBLAS symbol names, so call sites
+    // below (cgesvd, sgels, cblas_cgemv, cblas_cgemm) need no changes.
+    //
+    // We deliberately include only the narrow vecLib headers rather than the
+    // umbrella <Accelerate/Accelerate.h>. The umbrella pulls in CoreServices
+    // / CarbonCore / fp.h, which declares an extern `const double_t pi`
+    // that clashes with digHolo's own `const float pi` at line ~109. Narrow
+    // includes avoid Carbon entirely.
+    #include <vecLib/cblas_new.h>
+    #include <vecLib/lapack.h>
+    // Modern LAPACK type. In C++ this is std::complex<float>; layout-
+    // compatible with digHolo's internal complex64, so we only use it as a
+    // cast target at BLAS/LAPACK call boundaries. Note: the legacy
+    // __CLPK_complex struct is NOT exposed when ACCELERATE_NEW_LAPACK is set.
+    #define BLAS_COMPLEXTYPE __LAPACK_float_complex
+    // Accelerate's CBLAS uses the historical name CBLAS_ORDER. The
+    // MKL/reference CBLAS convention renamed it CBLAS_LAYOUT; digHolo.cpp
+    // uses the newer name at a few call sites, so alias it.
+    typedef enum CBLAS_ORDER CBLAS_LAYOUT;
+    // Modern LAPACK exposes trailing-underscore symbols; map the undecorated
+    // names the code uses onto them. Matches the OpenBLAS Fortran-interface
+    // aliasing in the #else branch below.
+    #define cgesvd cgesvd_
+    #define sgels  sgels_
+#elif defined(MKL_ENABLE)
+    //Intel MKL library
+    //Console 'MKL Link link advisor' for assistance selecting the correct .libs
+    //https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl/link-line-advisor.html
+    //e.g. static linked :  mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
+        //or if you're having issues with libiomp5md.lib (openMP threads), link with the sequential version
+        //mkl_intel_lp64.lib;mkl_sequential.lib;mkl_core.lib
+    //e.g. dynamic linked :  mkl_rt.lib
 
-	//If using Intel MKL...
-	//Don't forget C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
-	//C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
-	//Most of your dlls will be in folder C:\Program Files (x86)\Intel\oneAPI\mkl\latest\redist\intel64\..., you'll need to copy those into the same folder as your executable.
+    //If using Intel MKL...
+    //Don't forget C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
+    //C:\Program Files (x86)\Intel\oneAPI\compiler\latest\windows\redist\intel64_win\compiler\libiomp5md.dll
+    //Most of your dlls will be in folder C:\Program Files (x86)\Intel\oneAPI\mkl\latest\redist\intel64\..., you'll need to copy those into the same folder as your executable.
 
-#include <mkl_lapack.h>//cgesvd, sgels
-#ifdef CBLAS_ENABLE
-#include <mkl_cblas.h> //cgemv, cgemm
-#else //Fortran interface
-#include <mkl_blas.h> //cgemv, cgemm
-#endif
-//Define the complex type so functions don't complain that complex isn't what they expect, even if it's bitwise compatible with std::complex<float>
-#define BLAS_COMPLEXTYPE MKL_Complex8
+    #include <mkl_lapack.h>//cgesvd, sgels
+    #ifdef CBLAS_ENABLE
+    #include <mkl_cblas.h> //cgemv, cgemm
+    #else //Fortran interface
+    #include <mkl_blas.h> //cgemv, cgemm
+    #endif
+    //Define the complex type so functions don't complain that complex isn't what they expect, even if it's bitwise compatible with std::complex<float>
+    #define BLAS_COMPLEXTYPE MKL_Complex8
 #else
-	//openBLAS (https://www.openblas.net/)
-	//Link against libopenblas.lib (libopenblas.dll)
-#include <lapack.h>
-#ifdef CBLAS_ENABLE
-#include <cblas.h> //cgemv, cgemm
-#else //Fortran interface
-#include <blas.h> //cgemv, cgemm
-#endif
-#define BLAS_COMPLEXTYPE _Complex float
-#define cgesvd cgesvd_
-#define sgels sgels_
+    //openBLAS (https://www.openblas.net/)
+    //Link against libopenblas.lib (libopenblas.dll)
+    #include <lapack.h>
+    #ifdef CBLAS_ENABLE
+    #include <cblas.h> //cgemv, cgemm
+    #else //Fortran interface
+    #include <blas.h> //cgemv, cgemm
+    #endif
+    #define BLAS_COMPLEXTYPE _Complex float
+    #define cgesvd cgesvd_
+    #define sgels sgels_
 #endif
 #endif
 
@@ -484,6 +511,9 @@ int writeToBitmap(unsigned char* pixelArrayRGB, int width, int height, const cha
 
 #ifdef _WIN32
 #include <intrin.h>
+#elif defined(__aarch64__) || defined(__arm64__)
+    // arm64 has no cpuid equivalent; simde provides AVX2/FMA3 coverage at
+    // compile time, so we don't need to query the CPU for feature bits.
 #else
 #include <cpuid.h>
 #endif
@@ -539,6 +569,22 @@ int cpuInfoGet(cpuINFO* c)
 	__cpuidex((int*)&cpuInfo[0], a, 0);
 	avx2 = cpuInfo[1] >> 5 & 1;
 	avx512f = cpuInfo[1] >> 16 & 1;
+#elif defined(__aarch64__) || defined(__arm64__)
+	// arm64 (Apple Silicon): no CPUID equivalent. simde provides AVX2/FMA3
+	// coverage at compile time, so report them as available. Brand string is
+	// filled with a fixed label so downstream code (FFTW wisdom filename,
+	// logging) has something sensible to key on.
+	(void)a;  // suppress unused-variable warning
+	const char* brandLabel = "Apple Silicon (arm64)";
+	const size_t brandLen  = std::strlen(brandLabel);
+	for (size_t i = 0; i < brandLen && i < 0x40; ++i)
+	{
+		c[0].brand[i] = brandLabel[i];
+	}
+	avx      = 1;
+	fma3     = 1;
+	avx2     = 1;
+	avx512f  = 0;
 #else
 	unsigned int cpuInfo[4];
 
@@ -3087,7 +3133,7 @@ void UUconj(int Ny, int Nx, complex64* A, complex64* B, complex64* y)
 
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
-		cblas_cgemm(CBLAS_LAYOUT::CblasColMajor, CBLAS_TRANSPOSE::CblasConjTrans, CBLAS_TRANSPOSE::CblasNoTrans, M, N, K, &alpha, A, LDA, B, LDB, &beta, y, LDC);
+		cblas_cgemm(CBLAS_LAYOUT::CblasColMajor, CBLAS_TRANSPOSE::CblasConjTrans, CBLAS_TRANSPOSE::CblasNoTrans, M, N, K, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)A, LDA, (BLAS_COMPLEXTYPE*)B, LDB, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)y, LDC);
 #else
 		const char transA = 'C';
 		const char transB = 'N';
@@ -5026,7 +5072,7 @@ public: complex64* HGtoLG(complex64** HGcoefs, complex64** LGcoefs, int batchCou
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
 				auto tpose = inverseTransform ? CBLAS_TRANSPOSE::CblasConjTrans : CBLAS_TRANSPOSE::CblasNoTrans;
-				cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, mgIDX, mgIDX, &alpha, U, mgIDX, coefsHG, incx, &beta, coefsLG, incy);
+				cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, mgIDX, mgIDX, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)U, mgIDX, (BLAS_COMPLEXTYPE*)coefsHG, incx, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)coefsLG, incy);
 #else
 				const char trans = inverseTransform ? 'C' : 'N';
 				cgemv(&trans, &mgIDX, &mgIDX, (BLAS_COMPLEXTYPE*)alpha, (BLAS_COMPLEXTYPE*)U, &mgIDX, (BLAS_COMPLEXTYPE*)coefsHG, &incx, (BLAS_COMPLEXTYPE*)beta, (BLAS_COMPLEXTYPE*)coefsLG, &incy);
@@ -9594,7 +9640,7 @@ public: int SetWavelengthArbitrary(float* wavelengths, int lambdaCount)
 #ifdef LAPACKBLAS_ENABLE
 #ifdef CBLAS_ENABLE
 				   auto tpose = inverseTransform ? CBLAS_TRANSPOSE::CblasConjTrans : CBLAS_TRANSPOSE::CblasNoTrans;
-				   cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, n, m, &alpha, U, n, coefsHG, incx, &beta, coefsCustom, incy);
+				   cblas_cgemv(CBLAS_LAYOUT::CblasColMajor, tpose, n, m, (BLAS_COMPLEXTYPE*)&alpha, (BLAS_COMPLEXTYPE*)U, n, (BLAS_COMPLEXTYPE*)coefsHG, incx, (BLAS_COMPLEXTYPE*)&beta, (BLAS_COMPLEXTYPE*)coefsCustom, incy);
 #else
 				   const char trans = inverseTransform ? 'C' : 'N';
 				   cgemv(&trans, &n, &m, (BLAS_COMPLEXTYPE*)alpha, (BLAS_COMPLEXTYPE*)U, &n, (BLAS_COMPLEXTYPE*)coefsHG, &incx, (BLAS_COMPLEXTYPE*)beta, (BLAS_COMPLEXTYPE*)coefsCustom, &incy);
@@ -10210,7 +10256,21 @@ public: int SetWavelengthArbitrary(float* wavelengths, int lambdaCount)
 		   {
 			   //Just hard coded as 2, won't bother reallocating if the polCount changes.
 			   const size_t polCount = DIGHOLO_POLCOUNTMAX;// digHoloPolCount;
+			   //7 sub-arrays carved out below (TiltX, TiltY, TiltXoffset,
+			   //TiltYoffset, Defocus, CentreX, CentreY). Was previously 6,
+			   //which left CentreY_Valid pointing one element past the buffer
+			   //— a write past the end that x86 heap padding absorbed but
+			   //macOS arm64 allocator detects as corruption.
+			   //
+			   //TEMP DIAGNOSTIC (PR #4): gated to arm64 only, to test whether
+			   //the fix also changed x86 numerics (the reference .npy files
+			   //were generated against the pre-fix behaviour). Revert this
+			   //conditional once we've confirmed either way.
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+			   const size_t parameterCount = 7;
+#else
 			   const size_t parameterCount = 6;
+#endif
 			   //Just allocate it as 1 array an dereference
 			   allocate1D(parameterCount*polCount, digHoloRefTiltX_Valid);
 

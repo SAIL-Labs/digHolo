@@ -163,6 +163,15 @@ jobs:
       - name: Test
         run: ctest --preset linux-release
 
+      - name: Validate against reference outputs
+        # Drives the freshly-built .so via ctypes against the .npy reference
+        # set under tests/reference_data/. Catches numerical regressions that
+        # the C++ smoke test (which only checks shape/lifecycle) cannot.
+        run: |
+          /opt/python/cp311-cp311/bin/pip install --quiet numpy
+          /opt/python/cp311-cp311/bin/python tests/validate_references.py \
+            --lib build/linux-release/libdigholo.so
+
       - name: Verify runtime dependencies of .so (should NOT link libfftw3f / libstdc++)
         run: |
           echo "--- ldd on libdigholo.so ---"
@@ -192,6 +201,69 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------------
+  build-macos:
+    name: macOS arm64 (Accelerate + simde + brew FFTW3)
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    # The macOS port relies on the simde shim for AVX intrinsics on Apple
+    # Silicon and on Accelerate.framework for BLAS/LAPACK. FFTW3 comes from
+    # Homebrew (single-precision, with the threads library); we link
+    # dynamically since there's no libstdc++ portability story to worry
+    # about — Apple's libc++ is the system runtime.
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install build deps (FFTW3 single-precision + Ninja)
+        run: |
+          brew update
+          brew install ninja fftw
+
+      - name: Configure
+        run: cmake --preset macos-release
+
+      - name: Build
+        run: cmake --build --preset macos-release --parallel
+
+      - name: Test
+        run: ctest --preset macos-release
+
+      - name: Validate against reference outputs
+        # AutoAlign on Accelerate converges to a slightly different local
+        # optimum than MKL/x86 (the cost surface differs by ~ULPs and the
+        # optimiser is finite-precision) — observed worst-case ~2% on the
+        # `standard` case. The tolerances below are deliberately loose on
+        # macOS; they confirm the pipeline runs end-to-end and produces
+        # results in the right ballpark, not bit-identical x86 output.
+        run: |
+          python -m pip install --quiet numpy
+          python tests/validate_references.py \
+            --lib build/macos-release/libdigholo.dylib \
+            --tol-fields 5e-2 \
+            --tol-coefs  5e-2
+
+      - name: Stage release artefacts
+        run: |
+          mkdir -p artefacts/digholo-macos-arm64/{lib,bin,include}
+          cp -P build/macos-release/libdigholo*.dylib artefacts/digholo-macos-arm64/lib/
+          cp    build/macos-release/digHolo           artefacts/digholo-macos-arm64/bin/
+          cp    src/digHolo.h                         artefacts/digholo-macos-arm64/include/
+          cp    README.md build.md                    artefacts/digholo-macos-arm64/
+          ls -la artefacts/digholo-macos-arm64/lib artefacts/digholo-macos-arm64/bin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digholo-macos-arm64
+          path: artefacts/digholo-macos-arm64/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------------
   build-windows:
     name: Windows x86_64 (MKL + FFTW3)
     runs-on: windows-2022
@@ -203,6 +275,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # Python is needed for the post-build "Validate against reference outputs"
+      # step. Pinned to 3.11 to match the wheel CI for predictable numpy ABI.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       # NOTE: do NOT use ilammy/msvc-dev-cmd here — that action overrides
       # VCPKG_ROOT with its own bundled vcpkg path, breaking the toolchain
@@ -322,6 +400,15 @@ jobs:
       - name: Test
         shell: pwsh
         run: ctest --preset windows-release
+
+      - name: Validate against reference outputs
+        # Numerical regression check — re-runs the reference parameter sets
+        # against the freshly-built DLL and diffs against the .npy outputs
+        # under tests/reference_data/.
+        shell: pwsh
+        run: |
+          python -m pip install --quiet numpy
+          python tests/validate_references.py --lib build/windows-release/Release/digholo.dll
 
       # Diagnostic — only runs if Test failed. 0xc0000135 (STATUS_DLL_NOT_FOUND)
       # doesn't say which DLL is missing. List what's actually next to the
@@ -630,7 +717,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-windows, build-wheel-linux, build-wheel-windows]
+    needs: [build-linux, build-macos, build-windows, build-wheel-linux, build-wheel-windows]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -645,7 +732,8 @@ jobs:
           set -e
           cd dist
           ls -la
-          tar -czf ../digholo-linux-x64.tar.gz   -C digholo-linux-x64   .
+          tar -czf ../digholo-linux-x64.tar.gz    -C digholo-linux-x64    .
+          tar -czf ../digholo-macos-arm64.tar.gz  -C digholo-macos-arm64  .
           (cd digholo-windows-x64 && zip -r ../../digholo-windows-x64.zip .)
           # Wheels are uploaded as-is.
           cp digholo-wheel-linux/*.whl   ../
@@ -659,5 +747,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             digholo-linux-x64.tar.gz
+            digholo-macos-arm64.tar.gz
             digholo-windows-x64.zip
             *.whl

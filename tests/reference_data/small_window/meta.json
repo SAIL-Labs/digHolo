@@ -1,0 +1,51 @@
+{
+  "params": {
+    "name": "small_window",
+    "frameCount": 21,
+    "frameWidth": 320,
+    "frameHeight": 256,
+    "pixelSize": 2e-05,
+    "lambda0": 1.565e-06,
+    "polCount": 1,
+    "nx": 64,
+    "ny": 64,
+    "resolutionMode": 1,
+    "maxMG": 6,
+    "seed": 1
+  },
+  "output_shapes": {
+    "frames": [
+      21,
+      256,
+      320
+    ],
+    "fields": [
+      21,
+      32,
+      32
+    ],
+    "coefs": [
+      21,
+      21
+    ],
+    "x_axis": [
+      32
+    ],
+    "y_axis": [
+      32
+    ]
+  },
+  "fields_dims": {
+    "batch": 21,
+    "pol": 1,
+    "w": 32,
+    "h": 32
+  },
+  "coefs_dims": {
+    "batch": 21,
+    "modes": 21,
+    "pol": 1
+  },
+  "generated_at": "2026-04-21T02:31:05.060366Z",
+  "dll_path": "C:\\Users\\chrisbetters\\Documents\\digHolo_v1.0.0\\bin\\Win64\\digHolo.dll"
+}

@@ -161,6 +161,29 @@ digHoloDestroy(h);   // OK
 
 ---
 
+## 4. 🐛 Off-by-one in `digHoloUpdateReferenceWave` reference-state allocation
+
+**Affects:** every platform, but only manifests visibly on macOS arm64 (and presumably any platform where the libc heap doesn't add padding past tiny allocations). On x86 + glibc / MSVC heaps, the stray write lands inside allocator slack and the bug is silent. On macOS arm64's tiny-zone allocator, the next call to `free()` near that block trips heap-metadata corruption and aborts in `tiny_free_no_lock` — looks for all the world like a problem inside `fitToQuadratic` (where the next free happens), with no obvious connection to the actual buggy write.
+
+**Reproducer (macOS arm64):** any pipeline that calls `digHoloAutoAlign` with the full set of auto-align passes enabled (beam centre, tilt, defocus, basis waist, Fourier window). The regression suite's `small_window` case crashes with SIGABRT in `tiny_free_no_lock` after producing the simulator frames.
+
+**Root cause:** `digHoloUpdateReferenceWave` packs seven per-polarisation float arrays (`TiltX, TiltY, TiltXoffset, TiltYoffset, Defocus, CentreX, CentreY`) into a single backing allocation, but sized that allocation for **six**:
+
+```cpp
+const size_t parameterCount = 6;                              // <-- bug, should be 7
+allocate1D(parameterCount*polCount, digHoloRefTiltX_Valid);   // 12 floats, 48 bytes
+...
+digHoloRefCentreY_Valid = &digHoloRefTiltX_Valid[6 * polCount];  // points 1 past the end
+```
+
+The first write to `digHoloRefCentreY_Valid[polIdx]` (line 10406) lands at offset 48 of a 48-byte allocation — exactly one element past the tail. AddressSanitizer flags it as a heap-buffer-overflow at digHolo.cpp:10406; the original allocation is at digHolo.cpp:10261.
+
+**Fix in this fork:** change `parameterCount` to `7` in `src/digHolo.cpp:10259`. The matching `memset` of the buffer at line 10273 is already sized off the same `parameterCount`, so it scales correctly.
+
+**Reported upstream:** not yet. Latent on Linux/Windows but a real bug — worth filing.
+
+---
+
 ## ✏️ Non-bug cleanups we've also done in this fork
 
 These aren't upstream bugs per se but are worth surfacing if we ever PR back:

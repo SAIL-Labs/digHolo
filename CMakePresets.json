@@ -52,6 +52,23 @@
       "displayName": "Windows Release (Ninja, vcpkg)",
       "inherits": "windows-release",
       "generator": "Ninja"
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS Release (arm64, Ninja, simde + Accelerate)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "displayName": "macOS Debug (arm64, Ninja, simde + Accelerate)",
+      "inherits": "macos-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     }
   ],
 
@@ -59,7 +76,9 @@
     { "name": "linux-release",   "configurePreset": "linux-release" },
     { "name": "linux-debug",     "configurePreset": "linux-debug" },
     { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release" },
-    { "name": "windows-ninja",   "configurePreset": "windows-ninja" }
+    { "name": "windows-ninja",   "configurePreset": "windows-ninja" },
+    { "name": "macos-release", "configurePreset": "macos-release" },
+    { "name": "macos-debug",   "configurePreset": "macos-debug" }
   ],
 
   "testPresets": [
@@ -74,6 +93,12 @@
       "configurePreset": "windows-release",
       "configuration": "Release",
       "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "macos-release",
+      "configurePreset": "macos-release",
+      "output": { "outputOnFailure": true },
+      "execution": { "stopOnFailure": false }
     }
   ]
 }
