@@ -10261,7 +10261,16 @@ public: int SetWavelengthArbitrary(float* wavelengths, int lambdaCount)
 			   //which left CentreY_Valid pointing one element past the buffer
 			   //— a write past the end that x86 heap padding absorbed but
 			   //macOS arm64 allocator detects as corruption.
+			   //
+			   //TEMP DIAGNOSTIC (PR #4): gated to arm64 only, to test whether
+			   //the fix also changed x86 numerics (the reference .npy files
+			   //were generated against the pre-fix behaviour). Revert this
+			   //conditional once we've confirmed either way.
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
 			   const size_t parameterCount = 7;
+#else
+			   const size_t parameterCount = 6;
+#endif
 			   //Just allocate it as 1 array an dereference
 			   allocate1D(parameterCount*polCount, digHoloRefTiltX_Valid);
 
